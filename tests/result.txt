@@ -1,0 +1,21 @@
+==================================================
+INVOICE EXTRACTION ACCURACY REPORT
+==================================================
+
+Invoice: 9002197926 (pages 57-71)
+Items checked: 5
+
+HEADER FIELDS:
+  Currency (EUR): MATCH
+  IncoTerms (CIP): MATCH
+
+ITEM FIELDS (per-item):
+  Tariff Consistency (CTH=RITC=CETH=HSN): 5/5
+  Manufacturer Name: 5/5
+  Manufacturer Country: 5/5
+  Origin Populated: 5/5
+
+==================================================
+TOTAL CHECKS: 22/22
+ACCURACY: 100.0%
+==================================================
