@@ -6,6 +6,7 @@ Key Optimizations:
 2. Tuned for Gemini 3.0 Preview (Concurrency = 2)
 3. Robust Error Handling for Preview model instability (504/Cancelled)
 4. FIXED: Removed 'thinking_config' to resolve SDK compatibility error
+5. ADDED: 'item_date' field to InvoiceItem schema
 """
 
 import os
@@ -210,6 +211,9 @@ class InvoiceItem(BaseModel):
     item_description: Optional[str] = None
     item_part_no: Optional[str] = None
     item_po_no: Optional[str] = None
+    # --- NEW FIELD ADDED ---
+    item_date: Optional[str] = Field(None, description="Date specific to the line item (YYYY-MM-DD)")
+    # -----------------------
     hsn_code: Optional[str] = Field(None, description="Harmonized System Code")
     item_cth: Optional[str] = Field(None, description="Customs Tariff Heading")
     item_ritc: Optional[str] = Field(None, description="Regional Import Tariff Code")
@@ -731,4 +735,4 @@ async def process_document(file: UploadFile = File(...)):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000, timeout_keep_alive=300)
+    uvicorn.run(app, host="0.0.0.0", port=8998, timeout_keep_alive=300)

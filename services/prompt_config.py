@@ -243,6 +243,21 @@ INVOICE_ITEM_FIELDS: Dict[str, FieldConfig] = {
         ],
         aliases=["PO No", "PO Number", "Purchase Order", "Order No"]
     ),
+    # --- NEW FIELD START ---
+    "item_date": FieldConfig(
+        name="item_date",
+        display_name="Item Date",
+        field_type=FieldType.DATE,
+        description="Date specific to the line item (e.g. Delivery Date)",
+        extraction_guidelines=[
+            "Look for columns like 'Date', 'Delivery Date', 'Service Date', 'Shipment Date' in the item table",
+            "Return in ISO format: YYYY-MM-DD",
+            "If no specific date is listed for the item, return null"
+        ],
+        aliases=["Date", "Delivery Date", "Service Date", "Ship Date"],
+        required=False
+    ),
+    # --- NEW FIELD END ---
     "hsn_code": FieldConfig(
         name="hsn_code",
         display_name="HSN/HS Code",
@@ -505,15 +520,6 @@ AIRWAY_BILL_FIELDS: Dict[str, FieldConfig] = {
 def generate_field_prompt_section(fields: Dict[str, FieldConfig], section_name: str = "FIELDS") -> str:
     """
     Generate a structured prompt section from field configurations.
-    
-    Example output:
-    ### FIELDS TO EXTRACT:
-    - **seller_name** (Seller Name) [REQUIRED]
-      - Description: Name of the seller/supplier company
-      - Look for: 'Seller', 'Supplier', 'Vendor', 'Exporter', 'From'
-      - Guidelines:
-        • Look for 'Seller', 'Supplier', 'Vendor', 'Exporter', 'From'
-        • Usually the company name at the top of the invoice
     """
     lines = [f"### {section_name} TO EXTRACT:"]
     
@@ -546,15 +552,6 @@ def generate_extraction_prompt(
 ) -> str:
     """
     Generate a complete extraction prompt from field configurations.
-    
-    Args:
-        doc_type: "invoice" or "airway_bill"
-        fields: Main document fields
-        item_fields: Line item fields (for invoice)
-        custom_instructions: Additional instructions to add
-    
-    Returns:
-        Complete prompt string
     """
     prompt_parts = []
     
@@ -677,6 +674,7 @@ For commercial invoices from distributors/wholesalers:
 - **item_description**: Description + Part Number concatenated
 - **item_part_no**: Part Number/Article Number/SKU
 - **item_po_no**: Purchase Order number for this item
+- **item_date**: Specific date for the item (YYYY-MM-DD)
 - **hsn_code**: HS Code / Tariff Code (copy to CTH/RITC/CETH if only one code exists)
 - **item_cth**: Customs Tariff Heading (same as hsn_code if not separate)
 - **item_ritc**: Regional Import Tariff Code (same as hsn_code if not separate)
