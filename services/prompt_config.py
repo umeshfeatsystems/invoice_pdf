@@ -158,7 +158,7 @@ INVOICE_FIELDS: Dict[str, FieldConfig] = {
         extraction_guidelines=[
             "Look for IncoTerms like: EXW, FCA, FAS, FOB, CFR, CIF, CPT, CIP, DAP, DPU, DDP",
             "Usually labeled 'Terms', 'IncoTerms', 'Delivery Terms', 'Trade Terms'",
-            "May include location (e.g., 'FOB Shanghai')",
+            "May include location (e.g., 'FCA Singapore', 'CIP Mumbai')",
             "Extract only the IncoTerm code",
             "If IncoTerm is foud return Incoterm If no inco term is found return null"
         ],
@@ -200,10 +200,12 @@ INVOICE_ITEM_FIELDS: Dict[str, FieldConfig] = {
         field_type=FieldType.STRING,
         description="Serial/line number of the item",
         extraction_guidelines=[
-            "Look for 'S.No', 'Sr.No', 'Item No', 'Line No', '#'",
-            "Usually first column in the items table"
+            "HARDCODED RULE: ALWAYS return the value '1' for this field.",
+            "Do not extract from the document.",
+            "Ignore any other serial numbers visually present."
         ],
-        aliases=["S.No", "Sr.No", "Item No", "Line No", "#", "Sl No"]
+        aliases=["S.No", "Sr.No", "Item No", "Line No", "#", "Sl No"],
+        default="1"
     ),
     "item_description": FieldConfig(
         name="item_description",
@@ -236,7 +238,7 @@ INVOICE_ITEM_FIELDS: Dict[str, FieldConfig] = {
         field_type=FieldType.STRING,
         description="Purchase Order number for this line item",
         extraction_guidelines=[
-            "Look for 'PO No', 'PO Number', 'Purchase Order'",
+            "Only look for 'PO No', 'PO Number', 'Purchase Order', 'Order No', 'Order Number'",
             "May be same for all items or different per item"
         ],
         aliases=["PO No", "PO Number", "Purchase Order", "Order No"]
@@ -346,7 +348,7 @@ INVOICE_ITEM_FIELDS: Dict[str, FieldConfig] = {
         extraction_guidelines=[
             "Look for 'COO', 'Country of Origin', 'Origin', 'Made In'",
             "May be full country name or ISO code (US, DE, CN, TW, etc.)",
-            "May include 'Made in' prefix - extract country name only",
+            "May be include 'Made in' prefix - extract country name only",
             "May be same for all items"
         ],
         aliases=["COO", "Country of Origin", "Origin", "Made In", "Manufacturing Country"],
@@ -671,7 +673,7 @@ For commercial invoices from distributors/wholesalers:
 - **invoice_po_date**: PO Date if referenced (YYYY-MM-DD format)
 
 ### LINE ITEM FIELDS (Extract for EACH item row):
-- **item_no**: Row/Serial number (000001, 000002, or 1, 2, 3...)
+- **item_no**: HARDCODED RULE - ALWAYS set to "1"
 - **item_description**: Description + Part Number concatenated
 - **item_part_no**: Part Number/Article Number/SKU
 - **item_po_no**: Purchase Order number for this item

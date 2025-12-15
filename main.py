@@ -4,8 +4,8 @@ Optimized Logistics Document Processing Pipeline
 Key Optimizations:
 1. Parallel extraction (asyncio.gather) restored
 2. Tuned for Gemini 3.0 Preview (Concurrency = 2)
-3. Robust Error Handling for Preview model instability
-4. Visual Terminal Dashboard Restored
+3. Robust Error Handling for Preview model instability (504/Cancelled)
+4. FIXED: Removed 'thinking_config' to resolve SDK compatibility error
 """
 
 import os
@@ -56,20 +56,19 @@ else:
 
 CONFIG = {
     "CLASSIFIER_MODEL": "gemini-2.5-flash",    # Flash for fast classification
-    "EXTRACTOR_MODEL": "gemini-3-pro-preview", # <--- TARGET MODEL
+    "EXTRACTOR_MODEL": "gemini-2.5-pro", # <--- TARGET MODEL
     
-    # Timeouts
+    # Timeouts (INCREASED FOR 3.0 PREVIEW STABILITY)
     "CLASSIFICATION_TIMEOUT": 120,           
-    "BASE_TIMEOUT_SECONDS": 90,              # Increased for 3.0
-    "TIMEOUT_PER_PAGE": 15,                  
-    "MAX_TIMEOUT_SECONDS": 900,              
+    "BASE_TIMEOUT_SECONDS": 180,             # Increased from 90 -> 180
+    "TIMEOUT_PER_PAGE": 30,                  # Increased from 15 -> 30
+    "MAX_TIMEOUT_SECONDS": 1200,             # Increased from 900 -> 1200
     
     # --- PARALLEL CONFIGURATION TUNED FOR PREVIEW ---
-    # We want parallel, but 3 concurrent hits limits. 2 is the sweet spot.
-    "MAX_CONCURRENT_EXTRACTIONS": 2,         # Parallelism = 2
+    "MAX_CONCURRENT_EXTRACTIONS": 2,         # Parallelism = 2 (Sweet spot for Preview)
     "BATCH_SIZE": 2,                         # Batch Size = 2
     "INTER_BATCH_DELAY_SECONDS": 5.0,        # Delay between batches
-    "MIN_DELAY_BETWEEN_CALLS": 1.0,          # Small delay between individual calls
+    "MIN_DELAY_BETWEEN_CALLS": 2.0,          # Increased delay between individual calls
     
     # Robust Retry Configuration
     "MAX_RETRIES": 5,                        
@@ -80,16 +79,17 @@ CONFIG = {
 
 PRICING = {
     "gemini-2.5-flash": {"input": 0.075, "output": 0.30},
-    "gemini-2.5-pro": {"input": 1.25, "output": 5.00},
     "gemini-3-pro-preview": {"input": 3.50, "output": 10.50},
     "default": {"input": 0.10, "output": 0.40}
 }
 
-# Preview models often throw 503s or 500s alongside 429s
+# Preview models often throw 503s or 500s alongside 429s. 
+# ADDED 504/CANCELLED TO HANDLE PREVIEW TIMEOUTS
 QUOTA_ERROR_PATTERNS = [
     "quota", "rate limit", "resource exhausted", "429",
     "too many requests", "exceeded", "limit exceeded",
-    "503", "service unavailable", "internal server error"
+    "503", "service unavailable", "internal server error",
+    "504", "cancelled", "deadline exceeded" # Added explicitly for Stream/Gateway timeouts
 ]
 
 thread_pool = ThreadPoolExecutor(max_workers=4)
@@ -155,7 +155,7 @@ async def split_pdf_async(original_pdf_path: str, ranges: List[List[int]], outpu
     )
 
 def is_transient_error(error: Exception) -> bool:
-    """Check if error is Quota (429) or Server Stability (500/503)."""
+    """Check if error is Quota (429) or Server Stability (500/503/504)."""
     error_str = str(error).lower()
     return any(pattern in error_str for pattern in QUOTA_ERROR_PATTERNS)
 
@@ -193,7 +193,7 @@ async def execute_with_exponential_backoff(
             if is_transient_error(e):
                 logger.warning(
                     f"[{operation_name}] Transient Error (attempt {attempt+1}/{max_retries}). "
-                    f"Waiting {delay:.1f}s... Error: {str(e)[:50]}"
+                    f"Waiting {delay:.1f}s... Error: {str(e)[:100]}"
                 )
                 # Jitter to desynchronize parallel requests
                 jitter = delay * 0.2 * (random.random() * 2 - 1)
@@ -311,7 +311,15 @@ def clean_schema(schema):
     return _clean(schema)
 
 def get_generation_config(response_schema=None):
+    """
+    Generates config, REMOVING explicit 'thinking_config' to ensure
+    compatibility with current SDK versions.
+    """
     config = {"response_mime_type": "application/json", "temperature": 0.0}
+    
+    # NOTE: 'thinking_config' removed to prevent "Unknown field" error on older SDKs.
+    # The model will run with server-side defaults (Standard Mode).
+    
     if response_schema:
         try:
             if isinstance(response_schema, type) and issubclass(response_schema, BaseModel):
@@ -356,6 +364,8 @@ async def classify_documents_optimized(pdf_path: str) -> Tuple[DocumentClassific
 
     pdf_file = genai.upload_file(pdf_path, mime_type="application/pdf")
     model = get_classifier_model()
+    
+    # Use standard config (no thinking flags)
     config = get_generation_config(response_schema=DocumentClassification)
     
     try:
@@ -413,6 +423,7 @@ async def extract_single_document(
                     prompt = AWB_PROMPT
                     schema = AirwayBill
                 
+                # Use standard config (no thinking flags to avoid errors)
                 config = get_generation_config(response_schema=schema)
                 
                 response = await model.generate_content_async(

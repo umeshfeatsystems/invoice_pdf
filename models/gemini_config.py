@@ -60,11 +60,26 @@ def clean_schema(schema):
 
     return _clean(schema)
 
-def get_generation_config(response_schema=None):
+def get_generation_config(response_schema=None, enable_low_latency_thinking: bool = False):
+    """
+    Generates the model configuration.
+    
+    Args:
+        response_schema: The Pydantic model for JSON output.
+        enable_low_latency_thinking: If True, configures Gemini 3.0 for minimal reasoning latency.
+    """
     config = {
         "response_mime_type": "application/json",
         "temperature": 0.0,
     }
+    
+    # --- GEMINI 3.0 PRO SPECIFIC CONFIGURATION ---
+    if enable_low_latency_thinking:
+        config["thinking_config"] = {
+            "include_thoughts": False,  # Suppress thought tokens in output to prevent JSON parsing errors
+            "thinking_level": "LOW"     # "LOW" minimizes latency for high-throughput tasks
+        }
+    
     if response_schema:
         try:
             if isinstance(response_schema, type) and issubclass(response_schema, BaseModel):
@@ -74,7 +89,6 @@ def get_generation_config(response_schema=None):
                 config["response_schema"] = response_schema
         except Exception as e:
             print(f"Schema cleaning failed: {e}")
-            # Fallback: try sending raw schema if cleaning fails
             config["response_schema"] = response_schema
             
     return config
