@@ -235,27 +235,27 @@ INVOICE_ITEM_FIELDS: Dict[str, FieldConfig] = {
         ],
         aliases=["Part No", "Part Number", "P/N", "SKU", "Item Code", "Material No"]
     ),
-    # --- UPDATED FIELD: STRICT KEYWORD MATCHING ONLY ---
+    # --- UPDATED FIELD: GROUND TRUTH MAPPING FOR SUPPLIER ORDER NO ---
     "item_po_no": FieldConfig(
         name="item_po_no",
-        display_name="PO Number",
+        display_name="Supplier Order Number",
         field_type=FieldType.STRING,
-        description="Purchase Order number for this line item",
+        description="Supplier's internal order number (matches Ground Truth)",
         extraction_guidelines=[
-            "**CRITICAL: STRICT PO MATCHING**",
-            "ONLY extract if you find these EXACT keywords:",
-            "  1. 'PO No' or 'PO No.' or 'PO No:'",
-            "  2. 'PO Number' or 'PO Number:'",
-            "  3. 'Purchase Order' or 'Purchase Order No'",
+            "**GROUND TRUTH RULE: EXTRACT SUPPLIER ORDER NUMBER**",
+            "Extract the value labeled as:",
+            "  ✓ 'ORDER NO' or 'Order No.'",
+            "  ✓ 'Our order no.'",
+            "  ✓ 'Suppliers order No'",
             "",
-            "**EXCLUSION RULES:**",
-            "  - IGNORE 'Order No' or 'Order Number' (unless preceded by 'Purchase' or 'PO')",
-            "  - IGNORE 'Buyers Order No'",
-            "  - IGNORE 'Sales Order No'",
+            "**EXCLUSION RULES**:",
+            "  ✗ Do NOT extract 'Buyers Reference'",
+            "  ✗ Do NOT extract 'Your order no.'",
+            "  ✗ Do NOT extract 'Purchase Order No' (unless it is explicitly the supplier's number)",
             "",
-            "If no explicit 'PO' or 'Purchase Order' label exists, return NULL."
+            "If both 'Order No' (Supplier) and 'Your Ref' (Buyer) exist, ALWAYS pick 'Order No' to match ground truth."
         ],
-        aliases=["PO No", "PO Number", "Purchase Order"] # Removed "Order No"
+        aliases=["Order No", "Order Number", "Our Order No", "Supplier Order No"]
     ),
     # ---------------------------------------------------
     "item_date": FieldConfig(
@@ -660,15 +660,10 @@ For commercial invoices from distributors/wholesalers:
 - **Apply European decimal conversion if needed**
 - If only Total Amount is given: Unit Price = Total / Quantity
 
-#### 7. COUNTRY OF ORIGIN
-- Look for "COO", "Country of Origin", "Origin", "Made In"
-- May be 2-letter code (TW, DE, JP) or full name (Taiwan, Germany, Japan)
-- Extract as shown in document
-
-#### 8. PURCHASE ORDER
-- Look for "PO No", "P.O.", "Purchase Order", "Order No"
-- **invoice_po_date**: Date of the PO (if shown)
-- **item_po_no**: PO number per line item (may be same for all items)
+#### 7. PURCHASE ORDER (SUPPLIER VS BUYER)
+- The Ground Truth expects the **SUPPLIER'S ORDER NUMBER**.
+- **Rule**: Extract "Order No", "Order Number", "Our Order No". 
+- **Rule**: Do **NOT** extract "Buyer's Reference" or "Your Order No".
 
 ### DOCUMENT FIELDS TO EXTRACT:
 - **invoice_number**: Invoice No, Invoice #, Bill No
@@ -687,7 +682,7 @@ For commercial invoices from distributors/wholesalers:
 - **item_no**: HARDCODED RULE - ALWAYS set to "1"
 - **item_description**: Description + Part Number concatenated (Correctly aligned to row)
 - **item_part_no**: Part Number/Article Number/SKU
-- **item_po_no**: Purchase Order number for this item
+- **item_po_no**: Supplier Order Number / Order No (Extract 'Order No', 'Our Order No' - IGNORE 'Buyers Ref')
 - **item_date**: Specific date for the item (YYYY-MM-DD)
 - **hsn_code**: HS Code / Tariff Code (copy to CTH/RITC/CETH if only one code exists)
 - **item_cth**: Customs Tariff Heading (same as hsn_code if not separate)
