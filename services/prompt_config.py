@@ -232,18 +232,29 @@ INVOICE_ITEM_FIELDS: Dict[str, FieldConfig] = {
         ],
         aliases=["Part No", "Part Number", "P/N", "SKU", "Item Code", "Material No"]
     ),
+    # --- UPDATED FIELD: STRICT KEYWORD MATCHING ONLY ---
     "item_po_no": FieldConfig(
         name="item_po_no",
         display_name="PO Number",
         field_type=FieldType.STRING,
         description="Purchase Order number for this line item",
         extraction_guidelines=[
-            "Only look for 'PO No', 'PO Number', 'Purchase Order', 'Order No', 'Order Number'",
-            "May be same for all items or different per item"
+            "**CRITICAL: STRICT PO MATCHING**",
+            "ONLY extract if you find these EXACT keywords:",
+            "  1. 'PO No' or 'PO No.' or 'PO No:'",
+            "  2. 'PO Number' or 'PO Number:'",
+            "  3. 'Purchase Order' or 'Purchase Order No'",
+            "",
+            "**EXCLUSION RULES:**",
+            "  - IGNORE 'Order No' or 'Order Number' (unless preceded by 'Purchase' or 'PO')",
+            "  - IGNORE 'Buyers Order No'",
+            "  - IGNORE 'Sales Order No'",
+            "",
+            "If no explicit 'PO' or 'Purchase Order' label exists, return NULL."
         ],
-        aliases=["PO No", "PO Number", "Purchase Order", "Order No"]
+        aliases=["PO No", "PO Number", "Purchase Order"] # Removed "Order No"
     ),
-    # --- NEW FIELD START ---
+    # ---------------------------------------------------
     "item_date": FieldConfig(
         name="item_date",
         display_name="Item Date",
@@ -257,7 +268,6 @@ INVOICE_ITEM_FIELDS: Dict[str, FieldConfig] = {
         aliases=["Date", "Delivery Date", "Service Date", "Ship Date"],
         required=False
     ),
-    # --- NEW FIELD END ---
     "hsn_code": FieldConfig(
         name="hsn_code",
         display_name="HSN/HS Code",
