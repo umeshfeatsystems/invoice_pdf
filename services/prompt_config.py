@@ -215,7 +215,10 @@ INVOICE_ITEM_FIELDS: Dict[str, FieldConfig] = {
         extraction_guidelines=[
             "Look for 'Description', 'Particulars', 'Item Description', 'Goods'",
             "Extract complete description including any specifications",
-            "May span multiple lines - combine into single string"
+            "May span multiple lines - combine into single string",
+            "**CRITICAL ROW ALIGNMENT RULE:** Use visual alignment to ensure the Description belongs to the correct Part Number row.",
+            "Do not 'carry over' text from previous rows.",
+            "If a description is missing for a line item, strictly return null."
         ],
         aliases=["Description", "Particulars", "Item Description", "Goods", "Product"],
         required=True
@@ -627,6 +630,7 @@ Look for terms: EXW, FCA, FAS, FOB, CFR, CIF, CPT, CIP, DAP, DPU, DDP
 - Concatenate the description with the part number
 - Example: If description is "Ceramic Capacitor" and part no is "114300", 
   item_description should be "Ceramic Capacitor 114300"
+- **CRITICAL ROW ALIGNMENT RULE:** Use visual alignment to ensure the Description belongs to the correct Part Number row. Do not 'carry over' text from previous rows. If a description is missing, return null.
 
 #### 4. HS CODE / CTH / RITC / CETH (VERY IMPORTANT)
 These tariff codes are CRITICAL for customs:
@@ -681,7 +685,7 @@ For commercial invoices from distributors/wholesalers:
 
 ### LINE ITEM FIELDS (Extract for EACH item row):
 - **item_no**: HARDCODED RULE - ALWAYS set to "1"
-- **item_description**: Description + Part Number concatenated
+- **item_description**: Description + Part Number concatenated (Correctly aligned to row)
 - **item_part_no**: Part Number/Article Number/SKU
 - **item_po_no**: Purchase Order number for this item
 - **item_date**: Specific date for the item (YYYY-MM-DD)
