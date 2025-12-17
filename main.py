@@ -1,12 +1,11 @@
 """
 Optimized Logistics Document Processing Pipeline
 =================================================
-Key Optimizations:
-1. Parallel extraction (asyncio.gather) restored
-2. Tuned for Gemini 3.0 Preview (Concurrency = 2)
-3. Robust Error Handling for Preview model instability (504/Cancelled)
-4. FIXED: Removed 'thinking_config' to resolve SDK compatibility error
-5. ADDED: 'item_date' field to InvoiceItem schema
+Key Features:
+1. Specific Vendor Routing (ABB, Crown, Global)
+2. Parallel extraction (asyncio.gather) with Concurrency Control
+3. Dynamic Prompt Selection based on Classification
+4. Robust Error Handling for API Instability
 """
 
 import os
@@ -26,13 +25,18 @@ import google.generativeai as genai
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 from pypdf import PdfReader, PdfWriter
 from dotenv import load_dotenv
 
 # Import prompts from centralized config
-from services.prompt_config import INVOICE_PROMPT, AWB_PROMPT, CLASSIFICATION_PROMPT
+from services.prompt_config import (
+    INVOICE_PROMPT, 
+    ABB_PROMPT, 
+    CROWN_PROMPT, 
+    AWB_PROMPT, 
+    CLASSIFICATION_PROMPT
+)
 
 # ==========================================
 # 1. CONFIGURATION & ENVIRONMENT
@@ -57,40 +61,38 @@ else:
 
 CONFIG = {
     "CLASSIFIER_MODEL": "gemini-2.5-flash",    # Flash for fast classification
-    "EXTRACTOR_MODEL": "gemini-2.5-pro", # <--- TARGET MODEL
+    "EXTRACTOR_MODEL": "gemini-2.5-pro",       # Target Model
     
-    # Timeouts (INCREASED FOR 3.0 PREVIEW STABILITY)
+    # Timeouts
     "CLASSIFICATION_TIMEOUT": 120,           
-    "BASE_TIMEOUT_SECONDS": 180,             # Increased from 90 -> 180
-    "TIMEOUT_PER_PAGE": 30,                  # Increased from 15 -> 30
-    "MAX_TIMEOUT_SECONDS": 1200,             # Increased from 900 -> 1200
+    "BASE_TIMEOUT_SECONDS": 180,             
+    "TIMEOUT_PER_PAGE": 30,                  
+    "MAX_TIMEOUT_SECONDS": 1200,             
     
-    # --- PARALLEL CONFIGURATION TUNED FOR PREVIEW ---
-    "MAX_CONCURRENT_EXTRACTIONS": 2,         # Parallelism = 2 (Sweet spot for Preview)
-    "BATCH_SIZE": 2,                         # Batch Size = 2
-    "INTER_BATCH_DELAY_SECONDS": 5.0,        # Delay between batches
-    "MIN_DELAY_BETWEEN_CALLS": 2.0,          # Increased delay between individual calls
+    # --- PARALLEL CONFIGURATION ---
+    "MAX_CONCURRENT_EXTRACTIONS": 2,         # Parallelism = 2
+    "BATCH_SIZE": 2,                         
+    "INTER_BATCH_DELAY_SECONDS": 5.0,        
+    "MIN_DELAY_BETWEEN_CALLS": 2.0,          
     
     # Robust Retry Configuration
     "MAX_RETRIES": 5,                        
-    "INITIAL_RETRY_DELAY": 10.0,             # Longer initial wait
+    "INITIAL_RETRY_DELAY": 10.0,             
     "MAX_RETRY_DELAY": 60.0,                 
     "RETRY_MULTIPLIER": 2.0,                 
 }
 
 PRICING = {
     "gemini-2.5-flash": {"input": 0.075, "output": 0.30},
-    "gemini-3-pro-preview": {"input": 3.50, "output": 10.50},
+    "gemini-2.5-pro": {"input": 1.25, "output": 3.75}, 
     "default": {"input": 0.10, "output": 0.40}
 }
 
-# Preview models often throw 503s or 500s alongside 429s. 
-# ADDED 504/CANCELLED TO HANDLE PREVIEW TIMEOUTS
 QUOTA_ERROR_PATTERNS = [
     "quota", "rate limit", "resource exhausted", "429",
     "too many requests", "exceeded", "limit exceeded",
     "503", "service unavailable", "internal server error",
-    "504", "cancelled", "deadline exceeded" # Added explicitly for Stream/Gateway timeouts
+    "504", "cancelled", "deadline exceeded"
 ]
 
 thread_pool = ThreadPoolExecutor(max_workers=4)
@@ -156,7 +158,6 @@ async def split_pdf_async(original_pdf_path: str, ranges: List[List[int]], outpu
     )
 
 def is_transient_error(error: Exception) -> bool:
-    """Check if error is Quota (429) or Server Stability (500/503/504)."""
     error_str = str(error).lower()
     return any(pattern in error_str for pattern in QUOTA_ERROR_PATTERNS)
 
@@ -168,10 +169,6 @@ async def execute_with_exponential_backoff(
     multiplier: float = None,
     operation_name: str = "API call"
 ):
-    """
-    Robust retry logic. Uses exponential backoff to handle quota errors
-    without crashing the parallel pipeline.
-    """
     max_retries = max_retries or CONFIG["MAX_RETRIES"]
     initial_delay = initial_delay or CONFIG["INITIAL_RETRY_DELAY"]
     max_delay = max_delay or CONFIG["MAX_RETRY_DELAY"]
@@ -183,20 +180,16 @@ async def execute_with_exponential_backoff(
         try:
             if attempt > 0:
                 await asyncio.sleep(CONFIG["MIN_DELAY_BETWEEN_CALLS"])
-            
             return await async_func()
-            
         except Exception as e:
             if attempt >= max_retries:
                 logger.error(f"[{operation_name}] Failed after {max_retries} retries: {e}")
                 raise e
-            
             if is_transient_error(e):
                 logger.warning(
                     f"[{operation_name}] Transient Error (attempt {attempt+1}/{max_retries}). "
                     f"Waiting {delay:.1f}s... Error: {str(e)[:100]}"
                 )
-                # Jitter to desynchronize parallel requests
                 jitter = delay * 0.2 * (random.random() * 2 - 1)
                 await asyncio.sleep(delay + jitter)
                 delay = min(delay * multiplier, max_delay)
@@ -211,9 +204,7 @@ class InvoiceItem(BaseModel):
     item_description: Optional[str] = None
     item_part_no: Optional[str] = None
     item_po_no: Optional[str] = None
-    # --- NEW FIELD ADDED ---
     item_date: Optional[str] = Field(None, description="Date specific to the line item (YYYY-MM-DD)")
-    # -----------------------
     hsn_code: Optional[str] = Field(None, description="Harmonized System Code")
     item_cth: Optional[str] = Field(None, description="Customs Tariff Heading")
     item_ritc: Optional[str] = Field(None, description="Regional Import Tariff Code")
@@ -252,7 +243,18 @@ class AirwayBill(BaseModel):
     frieght_currency: Optional[str] = Field(None, description="Currency for freight (EUR, SGD, etc.)")
 
 class DocumentClassification(BaseModel):
-    invoices: List[List[int]] = Field(default_factory=list)
+    """
+    Classification result showing page ranges for each document type.
+    Now supports specific vendor routing.
+    """
+    # Standard documents
+    invoices: List[List[int]] = Field(default_factory=list, description="Standard/Global Invoices")
+    
+    # Specific Vendor Invoices
+    abb_invoices: List[List[int]] = Field(default_factory=list, description="ABB or Epiroc Invoices")
+    crown_invoices: List[List[int]] = Field(default_factory=list, description="Crown Worldwide Invoices")
+    
+    # Logistics
     airway_bills: List[List[int]] = Field(default_factory=list)
 
 class ExtractionResult(BaseModel):
@@ -315,15 +317,7 @@ def clean_schema(schema):
     return _clean(schema)
 
 def get_generation_config(response_schema=None):
-    """
-    Generates config, REMOVING explicit 'thinking_config' to ensure
-    compatibility with current SDK versions.
-    """
     config = {"response_mime_type": "application/json", "temperature": 0.0}
-    
-    # NOTE: 'thinking_config' removed to prevent "Unknown field" error on older SDKs.
-    # The model will run with server-side defaults (Standard Mode).
-    
     if response_schema:
         try:
             if isinstance(response_schema, type) and issubclass(response_schema, BaseModel):
@@ -355,7 +349,6 @@ def get_extractor_model():
         _extractor_model = genai.GenerativeModel(CONFIG["EXTRACTOR_MODEL"])
     return _extractor_model
 
-
 async def classify_documents_optimized(pdf_path: str) -> Tuple[DocumentClassification, float]:
     """Optimized classification with timing."""
     start_time = time.time()
@@ -369,7 +362,6 @@ async def classify_documents_optimized(pdf_path: str) -> Tuple[DocumentClassific
     pdf_file = genai.upload_file(pdf_path, mime_type="application/pdf")
     model = get_classifier_model()
     
-    # Use standard config (no thinking flags)
     config = get_generation_config(response_schema=DocumentClassification)
     
     try:
@@ -380,6 +372,7 @@ async def classify_documents_optimized(pdf_path: str) -> Tuple[DocumentClassific
         )
         raw_class = DocumentClassification.model_validate_json(response.text)
         
+        # Sanitize output
         def clean_ranges(ranges_list):
             cleaned = []
             for r in ranges_list:
@@ -388,6 +381,8 @@ async def classify_documents_optimized(pdf_path: str) -> Tuple[DocumentClassific
             return cleaned
 
         raw_class.invoices = clean_ranges(raw_class.invoices)
+        raw_class.abb_invoices = clean_ranges(raw_class.abb_invoices)
+        raw_class.crown_invoices = clean_ranges(raw_class.crown_invoices)
         raw_class.airway_bills = clean_ranges(raw_class.airway_bills)
         
         elapsed = time.time() - start_time
@@ -406,13 +401,31 @@ async def extract_single_document(
     doc_index: int
 ) -> ExtractionResult:
     """
-    Extract a single document with rate limiting and robust retry.
+    Extract a single document using the correct prompt based on doc_type.
     """
     start_time = time.time()
     num_pages = page_range[1] - page_range[0] + 1 if len(page_range) == 2 else 1
     dynamic_timeout = calculate_timeout_for_pages(num_pages)
     
-    logger.info(f"Doc {doc_index}: Starting {doc_type} extraction (pages {page_range[0]}-{page_range[1]}, {num_pages} pages, timeout={dynamic_timeout}s)")
+    # 1. SELECT PROMPT & SCHEMA
+    if doc_type == "abb_invoice":
+        prompt = ABB_PROMPT
+        schema = Invoice
+        log_type = "ABB/Epiroc Invoice"
+    elif doc_type == "crown_invoice":
+        prompt = CROWN_PROMPT
+        schema = Invoice
+        log_type = "Crown Invoice"
+    elif doc_type == "invoice":
+        prompt = INVOICE_PROMPT
+        schema = Invoice
+        log_type = "Global Invoice"
+    else:
+        prompt = AWB_PROMPT
+        schema = AirwayBill
+        log_type = "Airway Bill"
+    
+    logger.info(f"Doc {doc_index}: Starting {log_type} (pages {page_range[0]}-{page_range[1]}, {num_pages} pages, timeout={dynamic_timeout}s)")
     
     async with get_api_semaphore():  # Rate limiting via semaphore
         try:
@@ -420,14 +433,6 @@ async def extract_single_document(
                 pdf_file = genai.upload_file(pdf_path, mime_type="application/pdf")
                 model = get_extractor_model()
                 
-                if doc_type == "invoice":
-                    prompt = INVOICE_PROMPT
-                    schema = Invoice
-                else:
-                    prompt = AWB_PROMPT
-                    schema = AirwayBill
-                
-                # Use standard config (no thinking flags to avoid errors)
                 config = get_generation_config(response_schema=schema)
                 
                 response = await model.generate_content_async(
@@ -454,7 +459,7 @@ async def extract_single_document(
             pydantic_obj = schema.model_validate_json(response.text)
             extracted_data = pydantic_obj.dict()
             
-            if doc_type == "invoice":
+            if schema == Invoice:
                 extracted_data = post_process_invoice(extracted_data)
             else:
                 extracted_data = post_process_airway_bill(extracted_data)
@@ -487,7 +492,6 @@ async def extract_single_document(
                 extraction_time_seconds=round(elapsed, 2)
             )
 
-
 def post_process_invoice(data: Dict[str, Any]) -> Dict[str, Any]:
     INVALID_LITERALS = {"", "null", "string", "number", "integer", "float", "boolean", "None"}
     def clean_value(value):
@@ -510,7 +514,6 @@ def post_process_invoice(data: Dict[str, Any]) -> Dict[str, Any]:
         if key != "items": data[key] = clean_value(data[key])
     return data
 
-
 def post_process_airway_bill(data: Dict[str, Any]) -> Dict[str, Any]:
     def clean_mawb(value):
         if not value: return None
@@ -529,7 +532,6 @@ def post_process_airway_bill(data: Dict[str, Any]) -> Dict[str, Any]:
     for key, value in data.items():
         if value == "" or value == "null": data[key] = None
     return data
-
 
 # ==========================================
 # 6. OPTIMIZED PIPELINE (PARALLEL + DASHBOARD)
@@ -550,29 +552,29 @@ async def run_pipeline_optimized(job_id: str, file_path: str, model_name: str):
         
         # ===== DASHBOARD: CLASSIFICATION =====
         total_invoice_pages = sum((r[1] - r[0] + 1) for r in classification.invoices) if classification.invoices else 0
+        total_abb_pages = sum((r[1] - r[0] + 1) for r in classification.abb_invoices) if classification.abb_invoices else 0
+        total_crown_pages = sum((r[1] - r[0] + 1) for r in classification.crown_invoices) if classification.crown_invoices else 0
         total_awb_pages = sum((r[1] - r[0] + 1) for r in classification.airway_bills) if classification.airway_bills else 0
         
         print("\n" + "="*60)
         print(f"📋 CLASSIFICATION RESULT (Job: {job_id[:8]}...)")
         print("="*60)
         print(f"⏱️  Classification time: {class_time:.2f}s")
-        print(f"\n📄 INVOICES ({len(classification.invoices)} documents, {total_invoice_pages} pages):")
-        for i, r in enumerate(classification.invoices, 1):
-            pages = r[1] - r[0] + 1
-            print(f"   {i}. Pages {r[0]}-{r[1]} ({pages} pages)")
-        print(f"\n✈️  AIRWAY BILLS ({len(classification.airway_bills)} documents, {total_awb_pages} pages):")
-        for i, r in enumerate(classification.airway_bills, 1):
-            pages = r[1] - r[0] + 1
-            print(f"   {i}. Pages {r[0]}-{r[1]} ({pages} pages)")
-        if not classification.airway_bills:
-            print("   (None detected)")
+        print(f"\n📦 INVOICES (Standard): {len(classification.invoices)} docs ({total_invoice_pages} pages)")
+        print(f"🔧 INVOICES (ABB/Epiroc): {len(classification.abb_invoices)} docs ({total_abb_pages} pages)")
+        print(f"👑 INVOICES (Crown):      {len(classification.crown_invoices)} docs ({total_crown_pages} pages)")
+        print(f"✈️  AIRWAY BILLS:          {len(classification.airway_bills)} docs ({total_awb_pages} pages)")
         print("="*60 + "\n")
         
-        # Step 2: Split PDF
+        # Step 2: Split PDF & Build Tasks
         JOBS[job_id]["status"] = "splitting"
         split_tasks = []
-        for r in classification.invoices: split_tasks.append({"type": "invoice", "range": r})
-        for r in classification.airway_bills: split_tasks.append({"type": "airway_bill", "range": r})
+        
+        # Priority: Specific -> Global -> AWB
+        for r in classification.abb_invoices:   split_tasks.append({"type": "abb_invoice", "range": r})
+        for r in classification.crown_invoices: split_tasks.append({"type": "crown_invoice", "range": r})
+        for r in classification.invoices:       split_tasks.append({"type": "invoice", "range": r})
+        for r in classification.airway_bills:   split_tasks.append({"type": "airway_bill", "range": r})
         
         ranges = [t["range"] for t in split_tasks]
         if not ranges:
@@ -586,7 +588,6 @@ async def run_pipeline_optimized(job_id: str, file_path: str, model_name: str):
         
         # Step 3: PARALLEL EXTRACTION
         JOBS[job_id]["status"] = "extracting"
-        # Concurrency controlled by Semaphore in CONFIG
         JOBS[job_id]["extraction_parallelism"] = min(len(split_paths), CONFIG["MAX_CONCURRENT_EXTRACTIONS"])
         
         extraction_start = time.time()
@@ -685,11 +686,10 @@ async def run_pipeline_optimized(job_id: str, file_path: str, model_name: str):
         JOBS[job_id]["status"] = "failed"
         JOBS[job_id]["error"] = str(e)
 
-
 # ==========================================
 # 7. FASTAPI APPLICATION
 # ==========================================
-app = FastAPI(title="Logistics Extraction API (Parallel 3.0 Preview)", version="3.2.0")
+app = FastAPI(title="Logistics Extraction API (Vendor Routing + Parallel)", version="3.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -704,7 +704,6 @@ UPLOAD_DIR = "uploads"
 SPLIT_DIR = "splits"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(SPLIT_DIR, exist_ok=True)
-
 
 @app.post("/api/v1/process-document", response_model=JobStatusResponse)
 async def process_document(file: UploadFile = File(...)):
@@ -732,7 +731,6 @@ async def process_document(file: UploadFile = File(...)):
     await run_pipeline_optimized(job_id, file_path, CONFIG["EXTRACTOR_MODEL"])
     
     return JobStatusResponse(**JOBS[job_id])
-
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8998, timeout_keep_alive=300)

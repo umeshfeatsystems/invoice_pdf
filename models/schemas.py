@@ -7,7 +7,6 @@ Field names match the prompt_config.py configuration.
 
 from typing import List, Optional, Any
 from pydantic import BaseModel, Field
-from datetime import datetime
 
 # --- Nested Item Models ---
 
@@ -17,6 +16,9 @@ class InvoiceItem(BaseModel):
     item_description: Optional[str] = None
     item_part_no: Optional[str] = None
     item_po_no: Optional[str] = None
+    
+    # NEW: Date field
+    item_date: Optional[str] = Field(None, description="Date specific to the line item (YYYY-MM-DD)")
     
     # Tariff/Customs codes
     hsn_code: Optional[str] = Field(None, description="Harmonized System Code")
@@ -80,25 +82,30 @@ class AirwayBill(BaseModel):
 # --- API Response Models ---
 
 class DocumentClassification(BaseModel):
-    """Classification result showing page ranges for each document type."""
-    invoices: List[List[int]] = Field(default_factory=list)
+    """
+    Classification result showing page ranges for each document type.
+    Now supports specific vendor routing.
+    """
+    # Standard documents
+    invoices: List[List[int]] = Field(default_factory=list, description="Standard/Global Invoices")
+    
+    # Specific Vendor Invoices
+    abb_invoices: List[List[int]] = Field(default_factory=list, description="ABB or Epiroc Invoices")
+    crown_invoices: List[List[int]] = Field(default_factory=list, description="Crown Worldwide Invoices")
+    
+    # Logistics
     airway_bills: List[List[int]] = Field(default_factory=list)
 
 
 class ExtractionResult(BaseModel):
     """Result of extracting data from a single document."""
-    document_type: str  # "invoice" or "airway_bill"
+    document_type: str  # "invoice", "abb_invoice", "crown_invoice", "airway_bill"
     page_range: List[int]
-    data: Optional[dict] = None  # Holds the Dict of Invoice or AirwayBill
+    data: Optional[dict] = None 
     error: Optional[str] = None
-    processing_time: Optional[float] = None
-
-
-class JobSubmissionResponse(BaseModel):
-    """Response when a job is submitted."""
-    job_id: str
-    status: str
-    created_at: datetime
+    token_usage: Optional[dict] = None
+    cost_usd: Optional[float] = 0.0
+    extraction_time_seconds: Optional[float] = None
 
 
 class JobStatusResponse(BaseModel):
@@ -112,4 +119,8 @@ class JobStatusResponse(BaseModel):
     model_used: Optional[str] = None
     classification: Optional[DocumentClassification] = None
     results: Optional[List[ExtractionResult]] = None
+    total_tokens: Optional[int] = 0
+    total_cost_usd: Optional[float] = 0.0
     error: Optional[str] = None
+    classification_time_seconds: Optional[float] = None
+    extraction_parallelism: Optional[int] = None

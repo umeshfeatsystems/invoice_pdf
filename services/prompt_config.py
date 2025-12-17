@@ -2,16 +2,13 @@
 Standardized JSON-based Prompt Configuration System
 ====================================================
 This module defines extraction fields and their guidelines in a structured JSON format.
-Adding/removing fields is as simple as editing the FIELD_CONFIG dictionaries.
-
-Field naming follows the convention from production data:
-- Document fields: invoice_* prefix
-- Item fields: item_* prefix
+Updated for Specific Vendor Routing (ABB/Epiroc & Crown) while maintaining Global logic.
 """
 
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from enum import Enum
+import copy
 
 
 class FieldType(str, Enum):
@@ -25,14 +22,14 @@ class FieldType(str, Enum):
 @dataclass
 class FieldConfig:
     """Configuration for a single extraction field."""
-    name: str                           # JSON key name (e.g., "seller_name")
-    display_name: str                   # Human readable name (e.g., "Seller Name")
+    name: str                           # JSON key name
+    display_name: str                   # Human readable name
     field_type: FieldType               # Data type
     description: str                    # What this field represents
     extraction_guidelines: List[str]    # How to extract this field
-    aliases: List[str] = None           # Alternative names to look for in document
+    aliases: List[str] = None           # Alternative names
     required: bool = False              # Is this field mandatory
-    default: Any = None                 # Default value if not found
+    default: Any = None                 # Default value
     validation_rules: List[str] = None  # Validation instructions
     
     def __post_init__(self):
@@ -43,7 +40,7 @@ class FieldConfig:
 
 
 # =============================================================================
-# INVOICE FIELD CONFIGURATION
+# INVOICE FIELD CONFIGURATION (GLOBAL)
 # =============================================================================
 INVOICE_FIELDS: Dict[str, FieldConfig] = {
     # --- Header Fields ---
@@ -191,7 +188,7 @@ INVOICE_FIELDS: Dict[str, FieldConfig] = {
 }
 
 # =============================================================================
-# INVOICE LINE ITEM FIELD CONFIGURATION
+# INVOICE LINE ITEM FIELD CONFIGURATION (GLOBAL)
 # =============================================================================
 INVOICE_ITEM_FIELDS: Dict[str, FieldConfig] = {
     "item_no": FieldConfig(
@@ -235,77 +232,34 @@ INVOICE_ITEM_FIELDS: Dict[str, FieldConfig] = {
         ],
         aliases=["Part No", "Part Number", "P/N", "SKU", "Item Code", "Material No"]
     ),
-    # --- UPDATED FIELD: GROUND TRUTH MAPPING FOR SUPPLIER ORDER NO ---
     "item_po_no": FieldConfig(
-    name="item_po_no",
-    display_name="Item Purchase Order Number",
-    field_type=FieldType.STRING,
-    description="Customer-facing purchase order reference associated with the item",
-    extraction_guidelines=[
-
-        # ==================================================
-        # TIER 1 — CUSTOMER-FACING REFERENCES (HIGHEST)
-        # ==================================================
-        "**PRIMARY RULE (HIGHEST PRIORITY)**:",
-        "If a value is present next to any customer-facing labels such as:",
-        "- 'Your reference'",
-        "- 'Your order no', 'Your order number'",
-        "- 'Customer order', 'Customer Order No'",
-        "- 'Customer PO', 'Customer P.O.'",
-        "then extract THIS value as item_po_no.",
-        "This rule overrides proximity, repetition, and numeric confidence.",
-
-        "",
-        # ==================================================
-        # TIER 2 — SUPPLIER ORDER (ONLY IF TIER 1 MISSING)
-        # ==================================================
-        "**SECONDARY RULE (ONLY IF NO TIER 1 VALUE EXISTS)**:",
-        "If no customer-facing reference exists, extract values labeled as:",
-        "- 'Order no', 'Order number', or 'Sales order'.",
-
-        "",
-        # ==================================================
-        # ANTI-HALLUCINATION GUARDS
-        # ==================================================
-        "**ANTI-HALLUCINATION RULES**:",
-        "Do NOT prefer numeric-only values over alphanumeric ones.",
-        "Do NOT select values solely based on closeness to the item table.",
-        "If both Tier 1 and Tier 2 values exist, ALWAYS choose Tier 1.",
-
-        "",
-        # ==================================================
-        # ITEM-LEVEL HANDLING
-        # ==================================================
-        "**ITEM-LEVEL BEHAVIOR**:",
-        "If a single PO applies to all items, repeat it for each item.",
-        "If item-specific PO values exist, map accordingly.",
-
-        "",
-        # ==================================================
-        # FORMAT & NULL
-        # ==================================================
-        "**FORMAT RULE**:",
-        "Return only the raw alphanumeric value without labels.",
-
-        "",
-        "**NULL RULE**:",
-        "If no valid order reference exists, return null."
-    ],
-    aliases=[
-        "Your reference",
-        "Your order no",
-        "Your order number",
-        "Customer order",
-        "Customer Order No",
-        "Customer PO",
-        "Customer P.O.",
-        "Order no",
-        "Order number",
-        "Sales order"
-    ]
-),
-
-    # ---------------------------------------------------
+        name="item_po_no",
+        display_name="Item Purchase Order Number",
+        field_type=FieldType.STRING,
+        description="Customer-facing purchase order reference associated with the item",
+        extraction_guidelines=[
+            "**PRIMARY RULE (HIGHEST PRIORITY)**:",
+            "If a value is present next to any customer-facing labels such as:",
+            "- 'Your reference'",
+            "- 'Your order no', 'Your order number'",
+            "- 'Customer order', 'Customer Order No'",
+            "- 'Customer PO', 'Customer P.O.'",
+            "then extract THIS value as item_po_no.",
+            "This rule overrides proximity, repetition, and numeric confidence.",
+            "",
+            "**SECONDARY RULE (ONLY IF NO TIER 1 VALUE EXISTS)**:",
+            "If no customer-facing reference exists, extract values labeled as:",
+            "- 'Order no', 'Order number', or 'Sales order'.",
+            "",
+            "**ANTI-HALLUCINATION RULES**:",
+            "Do NOT prefer numeric-only values over alphanumeric ones.",
+            "If both Tier 1 and Tier 2 values exist, ALWAYS choose Tier 1.",
+            "",
+            "**NULL RULE**:",
+            "If no valid order reference exists, return null."
+        ],
+        aliases=["Your reference", "Customer PO", "Order No"]
+    ),
     "item_date": FieldConfig(
         name="item_date",
         display_name="Item Date",
@@ -470,7 +424,6 @@ INVOICE_ITEM_FIELDS: Dict[str, FieldConfig] = {
 
 # =============================================================================
 # AIRWAY BILL FIELD CONFIGURATION
-# Note: Field names match production data format (frieght spelling is intentional)
 # =============================================================================
 AIRWAY_BILL_FIELDS: Dict[str, FieldConfig] = {
     "master_awb_no": FieldConfig(
@@ -574,34 +527,76 @@ AIRWAY_BILL_FIELDS: Dict[str, FieldConfig] = {
     ),
 }
 
+# =============================================================================
+# SPECIFIC VENDOR OVERRIDES
+# =============================================================================
+
+# 1. ABB / Epiroc Logic
+ABB_ITEM_PO_FIELD = FieldConfig(
+    name="item_po_no",
+    display_name="Item PO Number (ABB/Epiroc)",
+    field_type=FieldType.STRING,
+    description="Customer Reference / Order Number",
+    extraction_guidelines=[
+        "**STRICT TARGETING RULE**:",
+        "Extract values ONLY from these labels:",
+        "- 'Your reference'",
+        "- 'Your orderNo.'",
+        "- 'Our order no'",
+        "If these specific labels are not found, return null.",
+        "**ANTI-HALLUCINATION**: Do NOT guess based on proximity."
+    ],
+    aliases=["Your reference", "Your orderNo.", "Our order no"]
+)
+
+# 2. Crown Logic
+CROWN_ITEM_PO_FIELD = FieldConfig(
+    name="item_po_no",
+    display_name="Item PO Number (Crown)",
+    field_type=FieldType.STRING,
+    description="Customer Purchase Order",
+    extraction_guidelines=[
+        "**STRICT TARGETING RULE**:",
+        "Extract value ONLY from label: 'Customer P.O.'",
+        "**NEGATIVE RULE (IGNORE)**:",
+        "Do NOT extract 'Order Number'",
+        "Do NOT extract 'Shipping number'",
+        "Do NOT extract 'Packing Slip'",
+        "If 'Customer P.O.' is missing, return null."
+    ],
+    aliases=["Customer P.O."]
+)
+
+def create_vendor_fields(override_po_config):
+    """Deep copy global fields and inject specific PO override."""
+    fields = copy.deepcopy(INVOICE_ITEM_FIELDS)
+    fields["item_po_no"] = override_po_config
+    return fields
+
+ABB_ITEM_FIELDS = create_vendor_fields(ABB_ITEM_PO_FIELD)
+CROWN_ITEM_FIELDS = create_vendor_fields(CROWN_ITEM_PO_FIELD)
+
 
 # =============================================================================
-# PROMPT GENERATOR
+# PROMPT GENERATION
 # =============================================================================
+
 def generate_field_prompt_section(fields: Dict[str, FieldConfig], section_name: str = "FIELDS") -> str:
-    """
-    Generate a structured prompt section from field configurations.
-    """
     lines = [f"### {section_name} TO EXTRACT:"]
-    
     for field_name, config in fields.items():
         required_tag = " [REQUIRED]" if config.required else ""
         lines.append(f"\n- **{config.name}** ({config.display_name}){required_tag}")
         lines.append(f"  - Description: {config.description}")
-        
         if config.aliases:
             lines.append(f"  - Look for: {', '.join([f'\"{a}\"' for a in config.aliases[:5]])}")
-        
         if config.extraction_guidelines:
             lines.append("  - Guidelines:")
             for guideline in config.extraction_guidelines:
                 lines.append(f"    • {guideline}")
-        
         if config.validation_rules:
             lines.append("  - Validation:")
             for rule in config.validation_rules:
                 lines.append(f"    • {rule}")
-    
     return "\n".join(lines)
 
 
@@ -611,38 +606,29 @@ def generate_extraction_prompt(
     item_fields: Optional[Dict[str, FieldConfig]] = None,
     custom_instructions: Optional[List[str]] = None
 ) -> str:
-    """
-    Generate a complete extraction prompt from field configurations.
-    """
     prompt_parts = []
     
-    # Header
-    if doc_type == "invoice":
-        prompt_parts.append("You are a forensic Customs Data Extractor. Extract data for Customs Filing from this Invoice.")
+    if "Airway Bill" in doc_type:
+        prompt_parts.append(f"You are a forensic Customs Data Extractor. Extract data from this {doc_type}.")
     else:
-        prompt_parts.append("You are a forensic Customs Data Extractor. Extract data from this Airway Bill.")
+        prompt_parts.append(f"You are a forensic Customs Data Extractor. Extract data for Customs Filing from this {doc_type}.")
     
     prompt_parts.append("\n")
-    
-    # Main fields
     prompt_parts.append(generate_field_prompt_section(fields, "DOCUMENT FIELDS"))
     
-    # Item fields (for invoice)
     if item_fields:
         prompt_parts.append("\n")
         prompt_parts.append(generate_field_prompt_section(item_fields, "LINE ITEM FIELDS"))
         prompt_parts.append("\n### LINE ITEMS INSTRUCTIONS:")
         prompt_parts.append("- Extract ALL line items from the items/products table")
+        prompt_parts.append("- **item_no**: HARDCODED RULE: ALWAYS set to '1'")
         prompt_parts.append("- Each row in the table = one item in the 'items' array")
-        prompt_parts.append("- If manufacturer details are the same for all items, still include them in each item")
     
-    # Custom instructions
     if custom_instructions:
-        prompt_parts.append("\n### ADDITIONAL INSTRUCTIONS:")
+        prompt_parts.append("\n### CRITICAL BUSINESS RULES & INSTRUCTIONS:")
         for instruction in custom_instructions:
             prompt_parts.append(f"- {instruction}")
-    
-    # Output instruction
+            
     prompt_parts.append("\n### OUTPUT:")
     prompt_parts.append("Return valid JSON strictly matching the provided schema.")
     prompt_parts.append("Use null for fields not found in the document.")
@@ -651,250 +637,88 @@ def generate_extraction_prompt(
 
 
 # =============================================================================
-# PRE-BUILT PROMPTS (Enhanced with Business Logic)
+# FINAL PROMPTS
 # =============================================================================
 
-# Custom high-accuracy invoice prompt with all business rules
-INVOICE_PROMPT = """
-You are a forensic Customs Data Extractor. Extract data for Customs Filing from this Commercial Invoice.
-
-### CRITICAL BUSINESS RULES:
-
-#### 1. EUROPEAN DECIMAL FORMAT (VERY IMPORTANT)
-Many European invoices use comma as decimal separator and period as thousands separator:
-- `74,932` means **74.932** (seventy-four point nine three two)
-- `1.685,84` means **1685.84** (one thousand six hundred eighty-five point eighty-four)
-- `10.000,00` means **10000.00** (ten thousand)
-**ALWAYS convert to standard format**: Use dot (.) for decimals, NO thousands separators.
-
-#### 2. INCOTERMS EXTRACTION
-Look for terms: EXW, FCA, FAS, FOB, CFR, CIF, CPT, CIP, DAP, DPU, DDP
-- Usually labeled "Terms", "IncoTerms", "Delivery Terms"
-- May include location (e.g., "FCA Singapore", "CIP Mumbai")
-- Extract ONLY the IncoTerm code (e.g., "FCA", "CIP", "FOB")
-
-#### 3. PRODUCT DESCRIPTION (CRITICAL)
-**item_description = [Description Text] + [Part Number/Article Number]**
-- Concatenate the description with the part number
-- Example: If description is "Ceramic Capacitor" and part no is "114300", 
-  item_description should be "Ceramic Capacitor 114300"
-- **CRITICAL ROW ALIGNMENT RULE:** Use visual alignment to ensure the Description belongs to the correct Part Number row. Do not 'carry over' text from previous rows. If a description is missing, return null.
-
-#### 4. HS CODE / CTH / RITC / CETH (VERY IMPORTANT)
-These tariff codes are CRITICAL for customs:
-- Look for columns: "HSN", "HS Code", "CTH", "RITC", "CETH", "Tariff Code", "Customs Tariff"
-- **hsn_code**: The main HS/Tariff code (e.g., "84671110", "39173300")
-- **item_cth**: Customs Tariff Heading - usually SAME as hsn_code
-- **item_ritc**: Regional Import Tariff Code - usually SAME as hsn_code  
-- **item_ceth**: Central Excise Tariff Heading - usually SAME as hsn_code
-- **If only one tariff code column exists, copy that value to ALL four fields (hsn_code, item_cth, item_ritc, item_ceth)**
-- These codes are 6-8 digit numbers (e.g., "84671110", "39173300")
-
-#### 5. MANUFACTURER INFORMATION (IMPORTANT)
-For commercial invoices from distributors/wholesalers:
-- **item_mfg_name**: Look for "Manufacturer", "Produced by", "Made by"
-- **If the seller/shipper is ALSO the manufacturer** (common for parts distributors like Atlas Copco, Power Tools Distribution): 
-  - Use the SELLER NAME as item_mfg_name
-  - Use the SELLER ADDRESS as item_mfg_addr
-  - Extract country from seller address as item_mfg_country
-- Example: If seller is "Power Tools Distribution N.V., Industrielaan 40, Belgium":
-  - item_mfg_name = "Power Tools Distribution N.V."
-  - item_mfg_addr = "Industrielaan 40, 3730 Bilzen-Hoeselt, Belgium"
-  - item_mfg_country = "Belgium"
-
-#### 6. QUANTITY & UNIT PRICE
-- Look for "Qty", "Quantity", "Delivered qty"
-- Unit Price may be labeled "Rate", "Unit Price", "Price/Unit"
-- **Apply European decimal conversion if needed**
-- If only Total Amount is given: Unit Price = Total / Quantity
-
-#### 7. PURCHASE ORDER (SUPPLIER VS BUYER)
-- The Ground Truth expects the **SUPPLIER'S ORDER NUMBER**.
-- **Rule**: Extract "Order No", "Order Number", "Our Order No". 
-- **Rule**: Do **NOT** extract "Buyer's Reference" or "Your Order No".
-
-### DOCUMENT FIELDS TO EXTRACT:
-- **invoice_number**: Invoice No, Invoice #, Bill No
-- **invoice_date**: Return in YYYY-MM-DD format
-- **seller_name**: Supplier/Vendor/Exporter name (company in letterhead)
-- **seller_address**: Full address of seller
-- **buyer_name**: Buyer/Consignee/Bill To/Importer
-- **buyer_address**: Full address of buyer
-- **invoice_currency**: 3-letter code (USD, EUR, JPY, SGD, etc.)
-- **total_amount**: Grand total (apply decimal conversion)
-- **invoice_toi**: IncoTerms (FCA, FOB, CIF, etc.)
-- **invoice_exchange_rate**: If mentioned on invoice
-- **invoice_po_date**: PO Date if referenced (YYYY-MM-DD format)
-
-### LINE ITEM FIELDS (Extract for EACH item row):
-- **item_no**: HARDCODED RULE - ALWAYS set to "1"
-- **item_description**: Description + Part Number concatenated (Correctly aligned to row)
-- **item_part_no**: Part Number / Article Number / SKU
-- **item_po_no**: Supplier Order Number / Supplier Order Reference  
-  (Extract 'Order No', 'Order Number', 'Our Order No', 'Sales Order' — IGNORE buyer/customer references)
-- **item_date**: Specific date for the item (YYYY-MM-DD)
-- **hsn_code**: HS Code / Tariff Code (copy to CTH/RITC/CETH if only one code exists)
-- **item_cth**: Customs Tariff Heading (same as hsn_code if not separate)
-- **item_ritc**: Regional Import Tariff Code (same as hsn_code if not separate)
-- **item_ceth**: Central Excise Tariff Heading (same as hsn_code if not separate)
-- **item_quantity**: Quantity (numeric, apply decimal conversion)
-- **item_uom**: Unit of Measure (PC, PCS, NOS, KG, etc.)
-- **item_unit_price**: Price per unit (numeric, apply decimal conversion)
-- **item_amount**: Line total (numeric, apply decimal conversion)
-- **item_origin_country**: Country of Origin (2-letter code or full name)
-- **item_mfg_name**: Manufacturer name (use seller if they are the manufacturer/distributor)
-- **item_mfg_addr**: Manufacturer address (use seller address if applicable)
-- **item_mfg_country**: Manufacturer country
-
-
-### OUTPUT RULES:
-1. Return valid JSON matching the schema exactly
-2. Use **null** ONLY for fields truly not present in the document
-3. Extract ALL line items from the products/items table
-4. Apply European decimal conversion to ALL numeric values
-5. Dates must be in YYYY-MM-DD format
-6. For tariff codes: If only hsn_code exists, copy it to item_cth, item_ritc, item_ceth
-"""
-
-# Custom high-accuracy AWB prompt with business rules and specific locations
-AWB_PROMPT = """
-You are a forensic Customs Data Extractor. Extract data from this Air Waybill (AWB) document.
-
-### DOCUMENT TYPES:
-1. **Master AWB (MAWB)**: Issued by airline, 11 digits exactly
-2. **House AWB (HAWB)**: Issued by freight forwarder, alphanumeric format
-
-### FIELD LOCATIONS (CRITICAL):
-
-#### 1. MASTER AIRWAY BILL NUMBER
-- **Location**: TOP LEFT CORNER of the document
-- **Format**: 11 DIGITS ONLY (e.g., "17617629931")
-- May also appear in CENTER under "Accounting Information"
-- May be labeled "M Airway Bill", "Master AWB", "MAWB No"
-- **IMPORTANT**: If the number contains text prefixes like "SIN", "NEU", "NEB" - IGNORE THE TEXT, extract ONLY the numeric digits
-- Example: "SIN17617629931" → extract as "17617629931"
-- Example: "176-17629931" → extract as "17617629931"
-- Return DIGITS ONLY (no letters, hyphens, or spaces)
-
-#### 2. HOUSE AIRWAY BILL NUMBER  
-- **Location**: TOP RIGHT CORNER of the document
-- **Format**: Alphanumeric, typically 8+ characters (e.g., "SIN10076768", "NEB06511186")
-- May be labeled "House Airway Bill", "HAWB", "H AWB No"
-- Keep alphanumeric characters
-
-#### 3. PACKAGE QUANTITY
-- Look for "No. of Pieces", "Packages", "Pcs", "Pieces"
-- Unit is typically "pcs" (pieces)
-- Extract as integer number
-
-#### 4. GROSS WEIGHT (KG)
-- **Location**: Weight section/box
-- Look for "Gross Weight", "G.W.", "Actual Weight", "Gross Wt (Kgs)"
-- Extract numeric value ONLY (without "kg" or "kgs")
-
-#### 5. CHARGEABLE WEIGHT (KG)
-- **Location**: Weight section, may be near "Warehouse" label
-- Look for "Chargeable Weight", "Chrg Wt", "Ch. Weight", "Billable Weight"
-- May be HIGHER than gross weight (due to volumetric calculation)
-- Extract numeric value ONLY
-
-#### 6. TOTAL FREIGHT
-- **Location**: Charges section
-- Look for "Total Freight", "Total Collect", "Total Prepaid", "Air Freight"
-- May be labeled simply as freight amount
-- Extract numeric value ONLY (no currency symbol)
-
-#### 7. FREIGHT CURRENCY
-- **Location**: Near freight amount
-- **Format**: 3-letter ISO code (SGD, EUR, USD, JPY, etc.)
-- May be in separate "Currency" field or printed next to amount
-
-### FIELDS TO EXTRACT:
-- **master_awb_no**: 11-digit Master AWB (TOP LEFT corner)
-- **house_awb_no**: House AWB alphanumeric (TOP RIGHT corner)
-- **shipper_name**: Shipper/Sender company name
-- **pkg_in_qty**: Package quantity (integer)
-- **gross_weight_kg**: Gross weight in KG (decimal)
-- **chargeable_weight_kg**: Chargeable weight in KG (decimal)
-- **total_frieght**: Total freight amount (decimal, "Total collect" or "Total prepaid")
-- **frieght_currency**: 3-letter currency code (SGD, EUR, USD, etc.)
-
-### OUTPUT RULES:
-1. Return valid JSON matching the schema exactly
-2. Use **null** for any field not found in the document
-3. All weights and freight should be numeric (float)
-4. MAWB must be 11 digits only (remove hyphens)
-5. Currency must be 3-letter ISO code
-"""
-
+# 1. CLASSIFICATION PROMPT (New Categories)
 CLASSIFICATION_PROMPT = """
-You are a Senior Document Router. Analyze this PDF.
+You are a Senior Document Router. Analyze this PDF and classify page ranges by document type.
 
-### MISSION:
-Identify page ranges for each document type:
+### DOCUMENT CATEGORIES:
 
-1. **INVOICE**
-   - Look for: "Invoice No", "Tax Invoice", "Commercial Invoice", "Total Amount", "Bill To"
-   - Contains: item tables, prices, quantities, totals
+1. **ABB / Epiroc INVOICE** ("abb_invoices")
+   - Look for logo/text: "ABB", "Epiroc"
+   - Look for specific labels: "Your reference", "Your orderNo.", "Our order no"
 
-2. **AIRWAY BILL**
-   - Look for: "Master AWB", "House AWB", "MAWB", "HAWB", "Shipper", "Consignee"
-   - Contains: shipping details, weights, package counts
+2. **CROWN INVOICE** ("crown_invoices")
+   - Look for logo/text: "Crown Worldwide", "Crown"
+   - Look for specific labels: "Customer P.O."
+
+3. **STANDARD INVOICE** ("invoices")
+   - Any other Commercial Invoice not matching above.
+   - Look for: "Invoice No", "Tax Invoice", "Bill To"
+
+4. **AIRWAY BILL** ("airway_bills")
+   - Look for: "Master AWB", "MAWB", "HAWB", "Shipper", "Consignee"
 
 ### RULES:
-- IGNORE these document types: "Shipping Instructions", "Packing List", "Specification Sheet", "Certificate"
-- Return strictly valid page numbers (1-indexed)
-- Multi-page documents: Return the [start, end] range
-- Single page documents: Return [page, page]
+- IGNORE: "Packing List", "Instructions", "Certificates"
+- Return strictly valid page numbers (1-indexed).
+- Multi-page docs: Return [start, end].
+- Single page: Return [page, page].
 
 ### OUTPUT JSON:
 {
   "invoices": [[start, end], ...],
+  "abb_invoices": [[start, end], ...],
+  "crown_invoices": [[start, end], ...],
   "airway_bills": [[start, end], ...]
 }
 """
 
+# 2. GLOBAL INVOICE PROMPT (Standard Logic)
+INVOICE_PROMPT = generate_extraction_prompt(
+    "Commercial Invoice", INVOICE_FIELDS, INVOICE_ITEM_FIELDS,
+    custom_instructions=[
+        "EUROPEAN FORMAT: 1.000,00 = 1000.00 (Convert to standard)",
+        "DATES: ISO Format YYYY-MM-DD",
+        "DESCRIPTION: Concatenate Description + Part Number",
+        "HS CODES: If only one exists, copy to CTH, RITC, CETH",
+        "MANUFACTURER: If seller is manufacturer, copy seller details to item_mfg fields"
+    ]
+)
 
-# =============================================================================
-# UTILITY: Get field as JSON config (for debugging/export)
-# =============================================================================
-def export_fields_as_json(fields: Dict[str, FieldConfig]) -> dict:
-    """Export field configuration as JSON-serializable dict."""
-    return {
-        name: {
-            "name": cfg.name,
-            "display_name": cfg.display_name,
-            "type": cfg.field_type.value,
-            "description": cfg.description,
-            "aliases": cfg.aliases,
-            "required": cfg.required,
-            "guidelines": cfg.extraction_guidelines,
-            "validation": cfg.validation_rules
-        }
-        for name, cfg in fields.items()
-    }
+# 3. ABB / EPIROC PROMPT (Specific Logic)
+ABB_PROMPT = generate_extraction_prompt(
+    "ABB / Epiroc Invoice", INVOICE_FIELDS, ABB_ITEM_FIELDS,
+    custom_instructions=[
+        "**VENDOR SPECIFIC**: This is an ABB/Epiroc invoice.",
+        "**item_po_no**: STRICTLY extract 'Your reference', 'Your orderNo.', or 'Our order no'.",
+        "EUROPEAN FORMAT: Convert 1.000,00 to 1000.00",
+        "DATES: ISO Format YYYY-MM-DD"
+    ]
+)
 
+# 4. CROWN PROMPT (Specific Logic)
+CROWN_PROMPT = generate_extraction_prompt(
+    "Crown Worldwide Invoice", INVOICE_FIELDS, CROWN_ITEM_FIELDS,
+    custom_instructions=[
+        "**VENDOR SPECIFIC**: This is a Crown Worldwide invoice.",
+        "**item_po_no**: STRICTLY extract 'Customer P.O.'",
+        "**IGNORE**: 'Order Number', 'Shipping number', 'Packing Slip' for item_po_no.",
+        "DATES: ISO Format YYYY-MM-DD"
+    ]
+)
 
-def get_all_field_names() -> dict:
-    """Get all field names for reference."""
-    return {
-        "invoice_fields": list(INVOICE_FIELDS.keys()),
-        "item_fields": list(INVOICE_ITEM_FIELDS.keys()),
-        "awb_fields": list(AIRWAY_BILL_FIELDS.keys())
-    }
-
+# 5. AWB PROMPT
+AWB_PROMPT = generate_extraction_prompt(
+    "Airway Bill", AIRWAY_BILL_FIELDS, None,
+    custom_instructions=[
+        "MAWB: 11 Digits only (Top Left)",
+        "HAWB: Alphanumeric (Top Right)",
+        "Weights/Freight: Numeric only, no units"
+    ]
+)
 
 if __name__ == "__main__":
-    # Test: Print generated prompts
-    print("=" * 80)
-    print("INVOICE PROMPT:")
-    print("=" * 80)
     print(INVOICE_PROMPT)
-    print("\n" + "=" * 80)
-    print("AWB PROMPT:")
-    print("=" * 80)
-    print(AWB_PROMPT)
-    print("\n" + "=" * 80)
-    print("ALL FIELD NAMES:")
-    print("=" * 80)
-    print(get_all_field_names())
