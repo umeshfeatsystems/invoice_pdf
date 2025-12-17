@@ -237,26 +237,74 @@ INVOICE_ITEM_FIELDS: Dict[str, FieldConfig] = {
     ),
     # --- UPDATED FIELD: GROUND TRUTH MAPPING FOR SUPPLIER ORDER NO ---
     "item_po_no": FieldConfig(
-        name="item_po_no",
-        display_name="Supplier Order Number",
-        field_type=FieldType.STRING,
-        description="Supplier's internal order number (matches Ground Truth)",
-        extraction_guidelines=[
-            "**GROUND TRUTH RULE: EXTRACT SUPPLIER ORDER NUMBER**",
-            "Extract the value labeled as:",
-            "  ✓ 'ORDER NO' or 'Order No.'",
-            "  ✓ 'Our order no.'",
-            "  ✓ 'Suppliers order No'",
-            "",
-            "**EXCLUSION RULES**:",
-            "  ✗ Do NOT extract 'Buyers Reference'",
-            "  ✗ Do NOT extract 'Your order no.'",
-            "  ✗ Do NOT extract 'Purchase Order No' (unless it is explicitly the supplier's number)",
-            "",
-            "If both 'Order No' (Supplier) and 'Your Ref' (Buyer) exist, ALWAYS pick 'Order No' to match ground truth."
-        ],
-        aliases=["Order No", "Order Number", "Our Order No", "Supplier Order No"]
-    ),
+    name="item_po_no",
+    display_name="Item Purchase Order Number",
+    field_type=FieldType.STRING,
+    description="Customer-facing purchase order reference associated with the item",
+    extraction_guidelines=[
+
+        # ==================================================
+        # TIER 1 — CUSTOMER-FACING REFERENCES (HIGHEST)
+        # ==================================================
+        "**PRIMARY RULE (HIGHEST PRIORITY)**:",
+        "If a value is present next to any customer-facing labels such as:",
+        "- 'Your reference'",
+        "- 'Your order no', 'Your order number'",
+        "- 'Customer order', 'Customer Order No'",
+        "- 'Customer PO', 'Customer P.O.'",
+        "then extract THIS value as item_po_no.",
+        "This rule overrides proximity, repetition, and numeric confidence.",
+
+        "",
+        # ==================================================
+        # TIER 2 — SUPPLIER ORDER (ONLY IF TIER 1 MISSING)
+        # ==================================================
+        "**SECONDARY RULE (ONLY IF NO TIER 1 VALUE EXISTS)**:",
+        "If no customer-facing reference exists, extract values labeled as:",
+        "- 'Order no', 'Order number', or 'Sales order'.",
+
+        "",
+        # ==================================================
+        # ANTI-HALLUCINATION GUARDS
+        # ==================================================
+        "**ANTI-HALLUCINATION RULES**:",
+        "Do NOT prefer numeric-only values over alphanumeric ones.",
+        "Do NOT select values solely based on closeness to the item table.",
+        "If both Tier 1 and Tier 2 values exist, ALWAYS choose Tier 1.",
+
+        "",
+        # ==================================================
+        # ITEM-LEVEL HANDLING
+        # ==================================================
+        "**ITEM-LEVEL BEHAVIOR**:",
+        "If a single PO applies to all items, repeat it for each item.",
+        "If item-specific PO values exist, map accordingly.",
+
+        "",
+        # ==================================================
+        # FORMAT & NULL
+        # ==================================================
+        "**FORMAT RULE**:",
+        "Return only the raw alphanumeric value without labels.",
+
+        "",
+        "**NULL RULE**:",
+        "If no valid order reference exists, return null."
+    ],
+    aliases=[
+        "Your reference",
+        "Your order no",
+        "Your order number",
+        "Customer order",
+        "Customer Order No",
+        "Customer PO",
+        "Customer P.O.",
+        "Order no",
+        "Order number",
+        "Sales order"
+    ]
+),
+
     # ---------------------------------------------------
     "item_date": FieldConfig(
         name="item_date",
@@ -681,8 +729,9 @@ For commercial invoices from distributors/wholesalers:
 ### LINE ITEM FIELDS (Extract for EACH item row):
 - **item_no**: HARDCODED RULE - ALWAYS set to "1"
 - **item_description**: Description + Part Number concatenated (Correctly aligned to row)
-- **item_part_no**: Part Number/Article Number/SKU
-- **item_po_no**: Supplier Order Number / Order No (Extract 'Order No', 'Our Order No' - IGNORE 'Buyers Ref')
+- **item_part_no**: Part Number / Article Number / SKU
+- **item_po_no**: Supplier Order Number / Supplier Order Reference  
+  (Extract 'Order No', 'Order Number', 'Our Order No', 'Sales Order' — IGNORE buyer/customer references)
 - **item_date**: Specific date for the item (YYYY-MM-DD)
 - **hsn_code**: HS Code / Tariff Code (copy to CTH/RITC/CETH if only one code exists)
 - **item_cth**: Customs Tariff Heading (same as hsn_code if not separate)
@@ -696,6 +745,7 @@ For commercial invoices from distributors/wholesalers:
 - **item_mfg_name**: Manufacturer name (use seller if they are the manufacturer/distributor)
 - **item_mfg_addr**: Manufacturer address (use seller address if applicable)
 - **item_mfg_country**: Manufacturer country
+
 
 ### OUTPUT RULES:
 1. Return valid JSON matching the schema exactly
