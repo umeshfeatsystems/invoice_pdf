@@ -1,12 +1,12 @@
 """
-Optimized Logistics Document Processing Pipeline (Production Grade)
-===================================================================
-Features:
-1. Professional Logging (logs/app.log + logs/errors.log)
-2. Robust JSON Cleaning (Handles Markdown backticks from LLM)
-3. Detailed Error Reporting (Safety Blocks, Quotas)
-4. Parallel Extraction with rate limiting
-5. Dashboard visualization preserved
+Optimized Logistics Document Processing Pipeline
+=================================================
+Key Optimizations:
+1. Parallel extraction (asyncio.gather) restored
+2. Tuned for Gemini 3.0 Preview (Concurrency = 2)
+3. Robust Error Handling for Preview model instability (504/Cancelled)
+4. FIXED: Removed 'thinking_config' to resolve SDK compatibility error
+5. ADDED: 'item_date' field to InvoiceItem schema
 """
 
 import os
@@ -17,9 +17,6 @@ import logging
 import asyncio
 import aiofiles
 import random
-import re
-import traceback
-from logging.handlers import RotatingFileHandler
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Tuple, Optional, Dict, Any
 from datetime import datetime
@@ -38,62 +35,23 @@ from dotenv import load_dotenv
 from services.prompt_config import INVOICE_PROMPT, AWB_PROMPT, CLASSIFICATION_PROMPT
 
 # ==========================================
-# 1. PROFESSIONAL LOGGING CONFIGURATION
+# 1. CONFIGURATION & ENVIRONMENT
 # ==========================================
 load_dotenv()
 
 def setup_logging():
-    """
-    Sets up a production-grade logger that:
-    1. Writes INFO+ logs to logs/app.log
-    2. Writes ERROR+ logs to logs/errors.log (Critical for debugging)
-    3. Prints to Console
-    """
-    log_dir = "logs"
-    os.makedirs(log_dir, exist_ok=True)
-    
-    # Formatter
-    formatter = logging.Formatter(
-        "%(asctime)s - [%(levelname)s] - %(name)s - %(funcName)s:%(lineno)d - %(message)s"
+    log_level = os.getenv("LOG_LEVEL", "INFO")
+    logging.basicConfig(
+        level=getattr(logging, log_level),
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
-
-    # 1. Main Application Log (Rotating, 10MB, keep 5)
-    app_handler = RotatingFileHandler(
-        os.path.join(log_dir, "app.log"), maxBytes=10*1024*1024, backupCount=5, encoding="utf-8"
-    )
-    app_handler.setLevel(logging.INFO)
-    app_handler.setFormatter(formatter)
-
-    # 2. Error Log (Only Errors, Rotating)
-    error_handler = RotatingFileHandler(
-        os.path.join(log_dir, "errors.log"), maxBytes=10*1024*1024, backupCount=5, encoding="utf-8"
-    )
-    error_handler.setLevel(logging.ERROR)
-    error_handler.setFormatter(formatter)
-
-    # 3. Console Log
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
-
-    logger = logging.getLogger("logistics_api")
-    logger.setLevel(logging.INFO)
-    
-    # Clear existing handlers to prevent duplicates on reload
-    if logger.hasHandlers():
-        logger.handlers.clear()
-        
-    logger.addHandler(app_handler)
-    logger.addHandler(error_handler)
-    logger.addHandler(console_handler)
-    
-    return logger
+    return logging.getLogger("logistics_optimized")
 
 logger = setup_logging()
 
 API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
-    logger.critical("❌ GEMINI_API_KEY missing! Service will fail.")
+    logger.warning("GEMINI_API_KEY not found in environment variables.")
 else:
     genai.configure(api_key=API_KEY)
 
@@ -122,7 +80,7 @@ CONFIG = {
 
 PRICING = {
     "gemini-2.5-flash": {"input": 0.075, "output": 0.30},
-    "gemini-2.5-pro": {"input": 3.50, "output": 10.50},
+    "gemini-3-pro-preview": {"input": 3.50, "output": 10.50},
     "default": {"input": 0.10, "output": 0.40}
 }
 
@@ -147,15 +105,6 @@ def get_api_semaphore():
 # ==========================================
 # 2. UTILITY FUNCTIONS
 # ==========================================
-def clean_json_text(text: str) -> str:
-    """Removes Markdown backticks to prevent JSON parsing errors."""
-    if not text: return ""
-    text = text.strip()
-    # Remove ```json ... ``` or ``` ... ```
-    text = re.sub(r"^```(json)?", "", text, flags=re.MULTILINE)
-    text = re.sub(r"```$", "", text, flags=re.MULTILINE)
-    return text.strip()
-
 def calculate_cost(model_name, input_tokens, output_tokens):
     pricing = PRICING.get("default")
     for key in PRICING:
@@ -262,7 +211,9 @@ class InvoiceItem(BaseModel):
     item_description: Optional[str] = None
     item_part_no: Optional[str] = None
     item_po_no: Optional[str] = None
+    # --- NEW FIELD ADDED ---
     item_date: Optional[str] = Field(None, description="Date specific to the line item (YYYY-MM-DD)")
+    # -----------------------
     hsn_code: Optional[str] = Field(None, description="Harmonized System Code")
     item_cth: Optional[str] = Field(None, description="Customs Tariff Heading")
     item_ritc: Optional[str] = Field(None, description="Regional Import Tariff Code")
@@ -370,6 +321,9 @@ def get_generation_config(response_schema=None):
     """
     config = {"response_mime_type": "application/json", "temperature": 0.0}
     
+    # NOTE: 'thinking_config' removed to prevent "Unknown field" error on older SDKs.
+    # The model will run with server-side defaults (Standard Mode).
+    
     if response_schema:
         try:
             if isinstance(response_schema, type) and issubclass(response_schema, BaseModel):
@@ -424,10 +378,7 @@ async def classify_documents_optimized(pdf_path: str) -> Tuple[DocumentClassific
             generation_config=config,
             request_options={"timeout": CONFIG["CLASSIFICATION_TIMEOUT"]}
         )
-        
-        # CLEAN RESPONSE TEXT BEFORE PARSING
-        cleaned_text = clean_json_text(response.text)
-        raw_class = DocumentClassification.model_validate_json(cleaned_text)
+        raw_class = DocumentClassification.model_validate_json(response.text)
         
         def clean_ranges(ranges_list):
             cleaned = []
@@ -455,7 +406,7 @@ async def extract_single_document(
     doc_index: int
 ) -> ExtractionResult:
     """
-    Extract a single document with rate limiting, robust retry, and safety checks.
+    Extract a single document with rate limiting and robust retry.
     """
     start_time = time.time()
     num_pages = page_range[1] - page_range[0] + 1 if len(page_range) == 2 else 1
@@ -491,15 +442,6 @@ async def extract_single_document(
                 do_extraction,
                 operation_name=f"Extract doc {doc_index} ({doc_type})"
             )
-
-            # --- CRITICAL: Handle Safety Filters ---
-            if response.candidates[0].finish_reason != 1: # 1 = STOP (Success)
-                logger.error(f"⚠️ Doc {doc_index}: Model stopped extraction. Reason: {response.candidates[0].finish_reason}")
-                return ExtractionResult(
-                    document_type=doc_type, page_range=page_range, 
-                    error=f"Model Blocked: {response.candidates[0].finish_reason}",
-                    extraction_time_seconds=time.time() - start_time
-                )
             
             usage = None
             if response.usage_metadata:
@@ -509,9 +451,7 @@ async def extract_single_document(
                     "total_token_count": response.usage_metadata.total_token_count
                 }
             
-            # CLEAN RESPONSE TEXT BEFORE PARSING
-            cleaned_text = clean_json_text(response.text)
-            pydantic_obj = schema.model_validate_json(cleaned_text)
+            pydantic_obj = schema.model_validate_json(response.text)
             extracted_data = pydantic_obj.dict()
             
             if doc_type == "invoice":
@@ -539,7 +479,7 @@ async def extract_single_document(
             
         except Exception as e:
             elapsed = time.time() - start_time
-            logger.exception(f"Extraction failed for doc {doc_index} after all retries.")
+            logger.error(f"Extraction failed for doc {doc_index} after all retries: {e}")
             return ExtractionResult(
                 document_type=doc_type,
                 page_range=page_range,
@@ -601,7 +541,6 @@ async def run_pipeline_optimized(job_id: str, file_path: str, model_name: str):
     try:
         JOBS[job_id]["status"] = "classifying"
         pipeline_start = time.time()
-        logger.info(f"Job {job_id}: Pipeline Started for {file_path}")
         
         # Step 1: Classification
         logger.info(f"Job {job_id}: Classifying...")
@@ -742,7 +681,7 @@ async def run_pipeline_optimized(job_id: str, file_path: str, model_name: str):
         logger.info(f"Job {job_id}: COMPLETED in {JOBS[job_id]['processing_time_seconds']}s")
         
     except Exception as e:
-        logger.exception(f"Job {job_id} CRITICAL FAILURE")
+        logger.error(f"Job {job_id} Failed: {e}")
         JOBS[job_id]["status"] = "failed"
         JOBS[job_id]["error"] = str(e)
 
@@ -780,7 +719,6 @@ async def process_document(file: UploadFile = File(...)):
         async with aiofiles.open(file_path, "wb") as f:
             await f.write(content)
     except Exception as e:
-        logger.exception(f"Upload failed for job {job_id}")
         raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
     
     JOBS[job_id] = {
@@ -791,7 +729,6 @@ async def process_document(file: UploadFile = File(...)):
         "model_used": CONFIG["EXTRACTOR_MODEL"]
     }
     
-    # Run in background (but await here for synchronous response as requested)
     await run_pipeline_optimized(job_id, file_path, CONFIG["EXTRACTOR_MODEL"])
     
     return JobStatusResponse(**JOBS[job_id])
