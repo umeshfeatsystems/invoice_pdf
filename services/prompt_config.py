@@ -2,11 +2,11 @@
 Standardized JSON-based Prompt Configuration System
 ====================================================
 Updated for Specific Vendor Routing:
-1. Commin (Murata / SIN-...) - UPDATED
+1. Commin (Murata / SIN-...)
 2. Type 1 (0100935473...)
 3. Type 2 (KM_558...)
 4. Crown
-5. ABB / Epiroc
+5. ABB / Epiroc - (FIXED: PO Priority & Part No Spacing)
 """
 
 from typing import Dict, List, Any, Optional
@@ -149,12 +149,32 @@ CROWN_PO = FieldConfig(
 )
 CROWN_FIELDS = create_custom_fields(po_override=CROWN_PO)
 
-# --- 5. ABB ---
+# --- 5. ABB / EPIROC (FJ1039) ---
 ABB_PO = FieldConfig(
-    name="item_po_no", display_name="PO Number (ABB)", field_type=FieldType.STRING, description="Ref/Order No",
-    extraction_guidelines=["**STRICT**: Extract 'Your reference', 'Your orderNo.', 'Our order no'"]
+    name="item_po_no", 
+    display_name="PO Number (ABB)", 
+    field_type=FieldType.STRING, 
+    description="Order No",
+    extraction_guidelines=[
+        "**PRIORITY 1**: Extract value from 'Your orderNo.' or 'Our order no'.",
+        "**PRIORITY 2**: 'Your reference' (ONLY if alphanumeric).",
+        "**NEGATIVE RULE**: If 'Your reference' is a person's name (e.g. 'Imran Shaikh'), IGNORE it.",
+        "Example: If 'Your reference: Imran Shaikh' and 'Your orderNo: 12345', extract '12345'."
+    ]
 )
-ABB_FIELDS = create_custom_fields(po_override=ABB_PO)
+
+ABB_PART = FieldConfig(
+    name="item_part_no",
+    display_name="Part Number (ABB)",
+    field_type=FieldType.STRING,
+    description="Article Number",
+    extraction_guidelines=[
+        "**STRICT**: Extract from column 'Pos Art No' or 'Art No'.",
+        "**CLEANING**: Remove empty spaces from the extracted value.",
+        "Example: Convert '9106 0038 59' -> '9106003859'."
+    ]
+)
+ABB_FIELDS = create_custom_fields(po_override=ABB_PO, part_override=ABB_PART)
 
 
 # =============================================================================
@@ -269,10 +289,13 @@ CROWN_PROMPT = generate_extraction_prompt(
 )
 
 ABB_PROMPT = generate_extraction_prompt(
-    "ABB Invoice", 
+    "ABB / Epiroc Invoice", 
     INVOICE_FIELDS, 
     ABB_FIELDS, 
-    ["**STRICT**: item_po_no = 'Your reference' OR 'Your orderNo.'"]
+    [
+        "**PO NUMBER**: Prefer 'Your orderNo.' or 'Our order no'. Ignore person names in 'Your reference'.",
+        "**PART NUMBER**: Extract from 'Pos Art No' column. Remove ALL spaces (e.g. '9106 0038 59' -> '9106003859')."
+    ]
 )
 
 INVOICE_PROMPT = generate_extraction_prompt(
