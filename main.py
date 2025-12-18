@@ -2,7 +2,7 @@
 Optimized Logistics Document Processing Pipeline
 =================================================
 Key Features:
-1. Specific Vendor Routing (ABB, Crown, Global)
+1. Specific Vendor Routing (Commin, Type1, Type2, Crown, ABB, Global)
 2. Parallel extraction (asyncio.gather) with Concurrency Control
 3. Dynamic Prompt Selection based on Classification
 4. Robust Error Handling for API Instability
@@ -33,7 +33,10 @@ from dotenv import load_dotenv
 from services.prompt_config import (
     INVOICE_PROMPT, 
     ABB_PROMPT, 
-    CROWN_PROMPT, 
+    CROWN_PROMPT,
+    COMMIN_PROMPT,
+    TYPE1_PROMPT,
+    TYPE2_PROMPT, 
     AWB_PROMPT, 
     CLASSIFICATION_PROMPT
 )
@@ -245,14 +248,25 @@ class AirwayBill(BaseModel):
 class DocumentClassification(BaseModel):
     """
     Classification result showing page ranges for each document type.
-    Now supports specific vendor routing.
+    Now supports 5 specific vendors + Global fallback.
     """
-    # Standard documents
-    invoices: List[List[int]] = Field(default_factory=list, description="Standard/Global Invoices")
+    # 1. Commin (SIN-10076768)
+    commin_invoices: List[List[int]] = Field(default_factory=list, description="Commin Invoices (SIN-...)")
     
-    # Specific Vendor Invoices
-    abb_invoices: List[List[int]] = Field(default_factory=list, description="ABB or Epiroc Invoices")
+    # 2. Type 1 (0100935473)
+    type1_invoices: List[List[int]] = Field(default_factory=list, description="Type 1 Invoices (0100935473...)")
+    
+    # 3. Type 2 (KM_558...)
+    type2_invoices: List[List[int]] = Field(default_factory=list, description="Type 2 Invoices (KM_...)")
+    
+    # 4. Crown
     crown_invoices: List[List[int]] = Field(default_factory=list, description="Crown Worldwide Invoices")
+    
+    # 5. ABB
+    abb_invoices: List[List[int]] = Field(default_factory=list, description="ABB or Epiroc Invoices")
+    
+    # Fallback
+    invoices: List[List[int]] = Field(default_factory=list, description="Standard/Global Invoices")
     
     # Logistics
     airway_bills: List[List[int]] = Field(default_factory=list)
@@ -380,9 +394,12 @@ async def classify_documents_optimized(pdf_path: str) -> Tuple[DocumentClassific
                 if valid_pages: cleaned.append([min(valid_pages), max(valid_pages)])
             return cleaned
 
-        raw_class.invoices = clean_ranges(raw_class.invoices)
-        raw_class.abb_invoices = clean_ranges(raw_class.abb_invoices)
+        raw_class.commin_invoices = clean_ranges(raw_class.commin_invoices)
+        raw_class.type1_invoices = clean_ranges(raw_class.type1_invoices)
+        raw_class.type2_invoices = clean_ranges(raw_class.type2_invoices)
         raw_class.crown_invoices = clean_ranges(raw_class.crown_invoices)
+        raw_class.abb_invoices = clean_ranges(raw_class.abb_invoices)
+        raw_class.invoices = clean_ranges(raw_class.invoices)
         raw_class.airway_bills = clean_ranges(raw_class.airway_bills)
         
         elapsed = time.time() - start_time
@@ -408,7 +425,19 @@ async def extract_single_document(
     dynamic_timeout = calculate_timeout_for_pages(num_pages)
     
     # 1. SELECT PROMPT & SCHEMA
-    if doc_type == "abb_invoice":
+    if doc_type == "commin_invoice":
+        prompt = COMMIN_PROMPT
+        schema = Invoice
+        log_type = "Commin Invoice"
+    elif doc_type == "type1_invoice":
+        prompt = TYPE1_PROMPT
+        schema = Invoice
+        log_type = "Type 1 Invoice"
+    elif doc_type == "type2_invoice":
+        prompt = TYPE2_PROMPT
+        schema = Invoice
+        log_type = "Type 2 Invoice"
+    elif doc_type == "abb_invoice":
         prompt = ABB_PROMPT
         schema = Invoice
         log_type = "ABB/Epiroc Invoice"
@@ -551,19 +580,19 @@ async def run_pipeline_optimized(job_id: str, file_path: str, model_name: str):
         JOBS[job_id]["classification_time_seconds"] = round(class_time, 2)
         
         # ===== DASHBOARD: CLASSIFICATION =====
-        total_invoice_pages = sum((r[1] - r[0] + 1) for r in classification.invoices) if classification.invoices else 0
-        total_abb_pages = sum((r[1] - r[0] + 1) for r in classification.abb_invoices) if classification.abb_invoices else 0
-        total_crown_pages = sum((r[1] - r[0] + 1) for r in classification.crown_invoices) if classification.crown_invoices else 0
-        total_awb_pages = sum((r[1] - r[0] + 1) for r in classification.airway_bills) if classification.airway_bills else 0
+        def count_pages(ranges): return sum((r[1] - r[0] + 1) for r in ranges) if ranges else 0
         
         print("\n" + "="*60)
         print(f"📋 CLASSIFICATION RESULT (Job: {job_id[:8]}...)")
         print("="*60)
         print(f"⏱️  Classification time: {class_time:.2f}s")
-        print(f"\n📦 INVOICES (Standard): {len(classification.invoices)} docs ({total_invoice_pages} pages)")
-        print(f"🔧 INVOICES (ABB/Epiroc): {len(classification.abb_invoices)} docs ({total_abb_pages} pages)")
-        print(f"👑 INVOICES (Crown):      {len(classification.crown_invoices)} docs ({total_crown_pages} pages)")
-        print(f"✈️  AIRWAY BILLS:          {len(classification.airway_bills)} docs ({total_awb_pages} pages)")
+        print(f"\n📦 INVOICES (Standard): {len(classification.invoices)} docs ({count_pages(classification.invoices)} pages)")
+        print(f"🛠️ COMMIN INVOICES:     {len(classification.commin_invoices)} docs ({count_pages(classification.commin_invoices)} pages)")
+        print(f"📄 TYPE 1 INVOICES:     {len(classification.type1_invoices)} docs ({count_pages(classification.type1_invoices)} pages)")
+        print(f"📄 TYPE 2 INVOICES:     {len(classification.type2_invoices)} docs ({count_pages(classification.type2_invoices)} pages)")
+        print(f"🔧 ABB/EPIROC:          {len(classification.abb_invoices)} docs ({count_pages(classification.abb_invoices)} pages)")
+        print(f"👑 CROWN INVOICES:      {len(classification.crown_invoices)} docs ({count_pages(classification.crown_invoices)} pages)")
+        print(f"✈️  AIRWAY BILLS:        {len(classification.airway_bills)} docs ({count_pages(classification.airway_bills)} pages)")
         print("="*60 + "\n")
         
         # Step 2: Split PDF & Build Tasks
@@ -571,10 +600,13 @@ async def run_pipeline_optimized(job_id: str, file_path: str, model_name: str):
         split_tasks = []
         
         # Priority: Specific -> Global -> AWB
-        for r in classification.abb_invoices:   split_tasks.append({"type": "abb_invoice", "range": r})
-        for r in classification.crown_invoices: split_tasks.append({"type": "crown_invoice", "range": r})
-        for r in classification.invoices:       split_tasks.append({"type": "invoice", "range": r})
-        for r in classification.airway_bills:   split_tasks.append({"type": "airway_bill", "range": r})
+        for r in classification.commin_invoices: split_tasks.append({"type": "commin_invoice", "range": r})
+        for r in classification.type1_invoices:  split_tasks.append({"type": "type1_invoice", "range": r})
+        for r in classification.type2_invoices:  split_tasks.append({"type": "type2_invoice", "range": r})
+        for r in classification.abb_invoices:    split_tasks.append({"type": "abb_invoice", "range": r})
+        for r in classification.crown_invoices:  split_tasks.append({"type": "crown_invoice", "range": r})
+        for r in classification.invoices:        split_tasks.append({"type": "invoice", "range": r})
+        for r in classification.airway_bills:    split_tasks.append({"type": "airway_bill", "range": r})
         
         ranges = [t["range"] for t in split_tasks]
         if not ranges:

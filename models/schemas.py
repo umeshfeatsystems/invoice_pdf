@@ -2,10 +2,11 @@
 Pydantic Schemas for Document Extraction
 =========================================
 These schemas define the structure of extracted data.
-Field names match the prompt_config.py configuration.
+Updated for 5-Way Strict Vendor Routing.
 """
 
 from typing import List, Optional, Any
+from datetime import datetime
 from pydantic import BaseModel, Field
 
 # --- Nested Item Models ---
@@ -17,7 +18,7 @@ class InvoiceItem(BaseModel):
     item_part_no: Optional[str] = None
     item_po_no: Optional[str] = None
     
-    # NEW: Date field
+    # Date field
     item_date: Optional[str] = Field(None, description="Date specific to the line item (YYYY-MM-DD)")
     
     # Tariff/Customs codes
@@ -68,7 +69,7 @@ class Invoice(BaseModel):
 
 
 class AirwayBill(BaseModel):
-    """Airway Bill document structure - field names match production data format."""
+    """Airway Bill document structure."""
     master_awb_no: Optional[str] = None
     house_awb_no: Optional[str] = None
     shipper_name: Optional[str] = None
@@ -84,14 +85,25 @@ class AirwayBill(BaseModel):
 class DocumentClassification(BaseModel):
     """
     Classification result showing page ranges for each document type.
-    Now supports specific vendor routing.
+    Now supports 5 specific vendors + Global fallback.
     """
-    # Standard documents
-    invoices: List[List[int]] = Field(default_factory=list, description="Standard/Global Invoices")
+    # 1. Commin (SIN-10076768)
+    commin_invoices: List[List[int]] = Field(default_factory=list, description="Commin Invoices (SIN-...)")
     
-    # Specific Vendor Invoices
-    abb_invoices: List[List[int]] = Field(default_factory=list, description="ABB or Epiroc Invoices")
+    # 2. Type 1 (0100935473)
+    type1_invoices: List[List[int]] = Field(default_factory=list, description="Type 1 Invoices (0100935473...)")
+    
+    # 3. Type 2 (KM_558...)
+    type2_invoices: List[List[int]] = Field(default_factory=list, description="Type 2 Invoices (KM_...)")
+    
+    # 4. Crown
     crown_invoices: List[List[int]] = Field(default_factory=list, description="Crown Worldwide Invoices")
+    
+    # 5. ABB
+    abb_invoices: List[List[int]] = Field(default_factory=list, description="ABB / Epiroc Invoices")
+    
+    # Fallback
+    invoices: List[List[int]] = Field(default_factory=list, description="Standard/Global Invoices")
     
     # Logistics
     airway_bills: List[List[int]] = Field(default_factory=list)
@@ -99,7 +111,7 @@ class DocumentClassification(BaseModel):
 
 class ExtractionResult(BaseModel):
     """Result of extracting data from a single document."""
-    document_type: str  # "invoice", "abb_invoice", "crown_invoice", "airway_bill"
+    document_type: str
     page_range: List[int]
     data: Optional[dict] = None 
     error: Optional[str] = None
