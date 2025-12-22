@@ -839,7 +839,7 @@ async def startup_event():
     """
     initialize_rate_limiter(
         model_limits={
-            "gemini-2.5-flash": 1000,  # Classification model
+            "gemini-2.5-flash": 1000,  # Classification models
             "gemini-2.5-pro": 150,     # Extraction model - THIS IS THE BOTTLENECK
         },
         safety_margin=0.7,             # 70% of limit (more conservative)
