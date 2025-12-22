@@ -38,8 +38,13 @@ from services.prompt_config import (
     TYPE1_PROMPT,
     TYPE2_PROMPT, 
     AWB_PROMPT, 
-    CLASSIFICATION_PROMPT
+    CLASSIFICATION_PROMPT,
+    REFINED_EXTRACTION_CONFIG
 )
+from services.refined_extractor import verify_field_with_llm
+
+# Import enhanced rate limiter with release function
+from services.rate_limiter import initialize_rate_limiter, get_rate_limiter, release_rate_limit, get_rate_limit_stats
 
 # ==========================================
 # 1. CONFIGURATION & ENVIRONMENT
@@ -63,22 +68,30 @@ else:
     genai.configure(api_key=API_KEY)
 
 CONFIG = {
-    "CLASSIFIER_MODEL": "gemini-2.5-flash",    # Flash for fast classification
-    "EXTRACTOR_MODEL": "gemini-2.5-pro",       # Target Model
+    # === MODEL CONFIGURATION ===
+    # ONLY use these models - they have favorable rate limits
+    # gemini-2.5-flash: 1000 RPM (classification) 
+    # gemini-2.5-pro: 150 RPM (extraction)
+    "CLASSIFIER_MODEL": "gemini-2.5-flash",    # Fast classification
+    "EXTRACTOR_MODEL": "gemini-2.5-pro",       # Accurate extraction
     
-    # Timeouts
+    # === TIMEOUT CONFIGURATION ===
     "CLASSIFICATION_TIMEOUT": 120,           
     "BASE_TIMEOUT_SECONDS": 180,             
     "TIMEOUT_PER_PAGE": 30,                  
     "MAX_TIMEOUT_SECONDS": 1200,             
     
-    # --- PARALLEL CONFIGURATION ---
-    "MAX_CONCURRENT_EXTRACTIONS": 2,         # Parallelism = 2
-    "BATCH_SIZE": 2,                         
-    "INTER_BATCH_DELAY_SECONDS": 5.0,        
-    "MIN_DELAY_BETWEEN_CALLS": 2.0,          
+    # === RATE LIMIT SAFE PARALLEL CONFIGURATION ===
+    # With gemini-2.5-pro at 150 RPM (effective 105 with 70% margin):
+    # - Max 1.75 requests/second
+    # - Minimum 571ms between requests
+    # For 40+ splits: keeps us well under limits
+    "MAX_CONCURRENT_EXTRACTIONS": 2,         # Only 2 concurrent to avoid bursts
+    "BATCH_SIZE": 2,                         # Process 2 at a time
+    "INTER_BATCH_DELAY_SECONDS": 3.0,        # Reduced from 5s (rate limiter handles pacing)
+    "MIN_DELAY_BETWEEN_CALLS": 1.0,          # Backup delay (rate limiter is primary)
     
-    # Robust Retry Configuration
+    # === ROBUST RETRY CONFIGURATION ===
     "MAX_RETRIES": 5,                        
     "INITIAL_RETRY_DELAY": 10.0,             
     "MAX_RETRY_DELAY": 60.0,                 
@@ -379,6 +392,9 @@ async def classify_documents_optimized(pdf_path: str) -> Tuple[DocumentClassific
     config = get_generation_config(response_schema=DocumentClassification)
     
     try:
+        # Rate limit before classification
+        await get_rate_limiter().acquire(CONFIG["CLASSIFIER_MODEL"])
+
         response = await model.generate_content_async(
             [CLASSIFICATION_PROMPT, pdf_file],
             generation_config=config,
@@ -456,9 +472,12 @@ async def extract_single_document(
     
     logger.info(f"Doc {doc_index}: Starting {log_type} (pages {page_range[0]}-{page_range[1]}, {num_pages} pages, timeout={dynamic_timeout}s)")
     
-    async with get_api_semaphore():  # Rate limiting via semaphore
+    async with get_api_semaphore():  # Concurrency control via semaphore
         try:
             async def do_extraction():
+                # Rate limit before extraction (sliding window + burst protection)
+                await get_rate_limiter().acquire(CONFIG["EXTRACTOR_MODEL"])
+
                 pdf_file = genai.upload_file(pdf_path, mime_type="application/pdf")
                 model = get_extractor_model()
                 
@@ -488,6 +507,30 @@ async def extract_single_document(
             pydantic_obj = schema.model_validate_json(response.text)
             extracted_data = pydantic_obj.dict()
             
+            # --- START REFINED EXTRACTION LOGIC ---
+            # Check if this document type has fields requiring secondary text-based verification
+            if doc_type in REFINED_EXTRACTION_CONFIG:
+                logger.info(f"Doc {doc_index}: Running refined extraction for {doc_type}...")
+                
+                for field_cfg in REFINED_EXTRACTION_CONFIG[doc_type]:
+                    if field_cfg.get("enabled", False):
+                        field_name = field_cfg["field"]
+                            
+                        # Secondary Verification Call (LLM-based per field)
+                        verified_value = await verify_field_with_llm(
+                            pdf_path,  # Pass the file path directly
+                            field_name,
+                            field_cfg["description"],
+                            valid_values=field_cfg.get("valid_values"), # Pass strict validation list
+                            model_name=CONFIG["CLASSIFIER_MODEL"] # Use Flash for speed/cost
+                        )
+                        
+                        logger.info(f"Doc {doc_index}: Refined {field_name} -> {verified_value}")
+                        
+                        # Update data (override or set)
+                        extracted_data[field_name] = verified_value
+            # --- END REFINED EXTRACTION LOGIC ---
+
             if schema == Invoice:
                 extracted_data = post_process_invoice(extracted_data)
             else:
@@ -520,24 +563,53 @@ async def extract_single_document(
                 error=str(e),
                 extraction_time_seconds=round(elapsed, 2)
             )
+        finally:
+            # CRITICAL: Release rate limiter slot when extraction completes
+            release_rate_limit(CONFIG["EXTRACTOR_MODEL"])
+
 
 def post_process_invoice(data: Dict[str, Any]) -> Dict[str, Any]:
+    # Valid Incoterms 2020 - only these values are accepted
+    VALID_INCOTERMS = {"EXW", "FCA", "CPT", "CIP", "DAP", "DPU", "DDP", "FAS", "FOB", "CFR", "CIF"}
     INVALID_LITERALS = {"", "null", "string", "number", "integer", "float", "boolean", "None"}
+    
     def clean_value(value):
         if value is None: return None
         if isinstance(value, str) and value.strip() in INVALID_LITERALS: return None
         return value
     
-    toi = data.get("invoice_toi", "") or ""
-    if toi and str(toi).upper().strip().startswith("FCA"):
-        data["invoice_toi"] = "FOB"
+    # 1. Exchange Rate Cleanup (1.0 -> None)
+    if str(data.get("invoice_exchange_rate", "")).replace(".0", "") == "1":
+        data["invoice_exchange_rate"] = None
+    
+    # TOI Logic REMOVED per user request ("extraction only")
+    # if "invoice_toi" in data:
+    #     data["invoice_toi"] = validate_incoterm(data.get("invoice_toi"))
     
     if "items" in data and isinstance(data["items"], list):
-        for item in data["items"]:
+        for idx, item in enumerate(data["items"], 1):
+            # Normalize UOM to uppercase
+            if item.get("item_uom"):
+                item["item_uom"] = str(item["item_uom"]).upper().strip()
+            
+            # 2. Extract Fields
             desc = (item.get("item_description") or "").strip()
             part = (item.get("item_part_no") or "").strip()
-            if part and part not in desc: item["item_description"] = f"{desc} {part}".strip()
-            for key in list(item.keys()): item[key] = clean_value(item[key])
+            origin = (item.get("item_origin_country") or "").strip()
+
+            # 3. Description Cleaning (Remove Part Number if present at end)
+            if desc and part and desc.endswith(part):
+                clean_desc = desc[:-len(part)].strip()
+                if clean_desc:
+                    item["item_description"] = clean_desc
+            
+            # 4. Standardize Crown Origin
+            if origin in ["United States", "Germany", "China", "Mexico"]:
+                item["item_origin_country"] = f"Made in {origin}"
+            
+            # Clean all values
+            for key in list(item.keys()): 
+                item[key] = clean_value(item[key])
     
     for key in list(data.keys()):
         if key != "items": data[key] = clean_value(data[key])
@@ -587,7 +659,7 @@ async def run_pipeline_optimized(job_id: str, file_path: str, model_name: str):
         print("="*60)
         print(f"⏱️  Classification time: {class_time:.2f}s")
         print(f"\n📦 INVOICES (Standard): {len(classification.invoices)} docs ({count_pages(classification.invoices)} pages)")
-        print(f"🛠️ COMMIN INVOICES:     {len(classification.commin_invoices)} docs ({count_pages(classification.commin_invoices)} pages)")
+        print(f"🛠️  COMMIN INVOICES:     {len(classification.commin_invoices)} docs ({count_pages(classification.commin_invoices)} pages)")
         print(f"📄 TYPE 1 INVOICES:     {len(classification.type1_invoices)} docs ({count_pages(classification.type1_invoices)} pages)")
         print(f"📄 TYPE 2 INVOICES:     {len(classification.type2_invoices)} docs ({count_pages(classification.type2_invoices)} pages)")
         print(f"🔧 ABB/EPIROC:          {len(classification.abb_invoices)} docs ({count_pages(classification.abb_invoices)} pages)")
@@ -649,7 +721,9 @@ async def run_pipeline_optimized(job_id: str, file_path: str, model_name: str):
             
             logger.info(f"Job {job_id}: Starting batch {batch_idx + 1}/{num_batches} ({len(batch)} docs)")
             
-            batch_coroutines = [
+            # [FIXED] PARALLEL EXECUTION
+            # 1. Create list of coroutine objects (tasks) but do not await them yet
+            tasks = [
                 extract_single_document(
                     pdf_path=task["pdf_path"],
                     doc_type=task["doc_type"],
@@ -659,9 +733,17 @@ async def run_pipeline_optimized(job_id: str, file_path: str, model_name: str):
                 for task in batch
             ]
             
-            # PARALLEL EXECUTION
-            batch_results = await asyncio.gather(*batch_coroutines, return_exceptions=True)
-            all_results.extend(batch_results)
+            # 2. Fire all tasks in this batch AT THE SAME TIME using gather
+            # return_exceptions=True prevents one failure from crashing the batch
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Collect results
+            for res in batch_results:
+                if isinstance(res, Exception):
+                    logger.error(f"Batch task failed: {res}")
+                    all_results.append(res)
+                else:
+                    all_results.append(res)
             
             if batch_idx < num_batches - 1:
                 logger.debug(f"Job {job_id}: Waiting {inter_batch_delay}s before next batch...")
@@ -709,6 +791,16 @@ async def run_pipeline_optimized(job_id: str, file_path: str, model_name: str):
                     print(f"   - {r.document_type} (pages {r.page_range}): {r.error[:50]}...")
         print(f"💰 Total cost: ${total_cost:.4f}")
         print(f"🔢 Total tokens: {total_tokens}")
+        
+        # Rate limiter stats
+        try:
+            stats = get_rate_limit_stats()
+            print("\n🛡️ Rate Limiter Stats:")
+            for model, st in stats.items():
+                print(f"   {model}: {st['current_window']}/{st['limit_rpm']} RPM, waited {st['total_wait_seconds']}s total")
+        except:
+            pass
+        
         print("="*60 + "\n")
         
         logger.info(f"Job {job_id}: COMPLETED in {JOBS[job_id]['processing_time_seconds']}s")
@@ -730,6 +822,31 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    Initialize bulletproof rate limiter on application startup.
+    
+    Rate Limits (from Google AI Studio dashboard):
+    - gemini-2.5-flash: 1000 RPM, 1M TPM, 10K RPD
+    - gemini-2.5-pro: 150 RPM, 2M TPM, 10K RPD
+    
+    With 70% safety margin:
+    - Flash: 700 effective RPM
+    - Pro: 105 effective RPM (~1.75 req/sec)
+    """
+    initialize_rate_limiter(
+        model_limits={
+            "gemini-2.5-flash": 1000,  # Classification model
+            "gemini-2.5-pro": 150,     # Extraction model - THIS IS THE BOTTLENECK
+        },
+        safety_margin=0.7,             # 70% of limit (more conservative)
+        min_request_gap_ms=500,        # Minimum 500ms between requests to same model
+        max_concurrent_per_model=2     # Max 2 concurrent requests per model
+    )
+    logger.info("✅ Bulletproof rate limiter initialized for 40+ split handling")
 
 JOBS = {}
 UPLOAD_DIR = "uploads"
@@ -765,4 +882,4 @@ async def process_document(file: UploadFile = File(...)):
     return JobStatusResponse(**JOBS[job_id])
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8998, timeout_keep_alive=300)
+    uvicorn.run(app, host="0.0.0.0", port=8988, timeout_keep_alive=300)
