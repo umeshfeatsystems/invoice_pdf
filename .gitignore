@@ -28,10 +28,7 @@ env/
 *.xlsx
 *.xls
 *.pdf
-*.json
-data/
-datasets/
-uploads/
+
 
 # --- Jupyter Notebooks (Optional: ignore checkpoints) ---
 .ipynb_checkpoints/

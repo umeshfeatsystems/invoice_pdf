@@ -1,0 +1,16 @@
+[
+  {
+    "file": "NUE25848073.pdf",
+    "type": "AWB",
+    "content": {
+      "master_awb_no": null,
+      "house_awb_no": null,
+      "shipper_name": null,
+      "pkg_in_qty": null,
+      "gross_weight_kg": null,
+      "chargeable_weight_kg": null,
+      "total_frieght": null,
+      "frieght_currency": null
+    }
+  }
+]
