@@ -736,6 +736,7 @@ TYPE1_FIELDS = create_custom_fields(
 
 
 # --- 3. TYPE 2 (KM_558...) ---
+# --- 3. TYPE 2 (KM_558...) ---
 TYPE2_PO = FieldConfig(
     name="item_po_no",
     display_name="PO Number (Type 2)",
@@ -759,7 +760,49 @@ TYPE2_PART = FieldConfig(
         "**NEGATIVE RULE**: Do NOT extract 'Pack number'"
     ]
 )
-TYPE2_FIELDS = create_custom_fields(po_override=TYPE2_PO, part_override=TYPE2_PART)
+
+# [FIX] Added Manufacturer Fallback for Type 2 (same as Type 1)
+TYPE2_MFG_NAME = FieldConfig(
+    name="item_mfg_name",
+    display_name="Manufacturer Name (Type 2)",
+    field_type=FieldType.STRING,
+    description="Manufacturer Name (Header Fallback)",
+    extraction_guidelines=[
+        "**LOOKUP STRATEGY**: Check the HEADER/SELLER block specifically.",
+        "**TARGET ENTITIES**: Look for 'POWER TOOLS DISTRIBUTION N.V.', 'Chicago Pneumatic', or 'Atlas Copco'.",
+        "**RULE**: If no explicit 'Manufacturer' column exists in line items, USE THE SELLER NAME from the header.",
+        "**DECOUPLING**: The Manufacturer (Legal Entity) may differ from 'Origin' (Country of Goods)."
+    ]
+)
+TYPE2_MFG_ADDR = FieldConfig(
+    name="item_mfg_addr",
+    display_name="Manufacturer Address (Type 2)",
+    field_type=FieldType.STRING,
+    description="Manufacturer Address (Header Fallback)",
+    extraction_guidelines=[
+        "**LOOKUP STRATEGY**: Extract the FULL address of the Manufacturer identified above.",
+        "**LOCATION**: Usually in the document header/letterhead (e.g. 'Industrielaan 40...').",
+        "**RULE**: If using Seller as Manufacturer, use Seller Address here."
+    ]
+)
+TYPE2_MFG_COUNTRY = FieldConfig(
+    name="item_mfg_country",
+    display_name="Manufacturer Country (Type 2)",
+    field_type=FieldType.STRING,
+    description="Manufacturer Country",
+    extraction_guidelines=[
+        "**DERIVATION**: Extract country from 'item_mfg_addr'.",
+        "**EXAMPLE**: 'BELGIUM' (if address is in Bilzen-Hoeselt)."
+    ]
+)
+
+TYPE2_FIELDS = create_custom_fields(
+    po_override=TYPE2_PO, 
+    part_override=TYPE2_PART,
+    mfg_name_override=TYPE2_MFG_NAME,
+    mfg_addr_override=TYPE2_MFG_ADDR,
+    mfg_country_override=TYPE2_MFG_COUNTRY
+)
 
 
 # --- 4. CROWN ---
@@ -1079,7 +1122,9 @@ TYPE2_PROMPT = generate_extraction_prompt(
     [
         "**STRICT**: item_po_no = 'ORDER NO'",
         "**STRICT**: item_part_no = 'Article number'",
-        "**IGNORE**: 'Pack number'"
+        "**IGNORE**: 'Pack number'",
+        "**MANUFACTURER OVERRIDE**: If no manufacturer column exists, use the SELLER (e.g., Power Tools Distribution) from the header as the Manufacturer.",
+        "**MANUFACTURER ADDRESS**: Extract the full address from the header (e.g., INDUSTRIELAAN 40...)."
     ]
 )
 
