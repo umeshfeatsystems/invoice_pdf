@@ -249,11 +249,11 @@ INVOICE_ITEM_FIELDS: Dict[str, FieldConfig] = {
         field_type=FieldType.STRING,
         description="Line item sequence number",
         extraction_guidelines=[
-            "**COLUMN HEADERS**: 'S.No', 'Sr.', 'Item', 'No.', 'Line', '#', 'Pos'",
-            "**LOCATION**: First column of line items table",
-            "**FORMAT**: Extract as-is (can be numeric: 1, 2, 3 or alphanumeric: A, B, C)",
-            "**DEFAULT**: If no explicit numbering, use row position (1, 2, 3...)",
-            "**NEGATIVE RULE**: Not the part number, not the quantity"
+            "**HARDCODED RULE**: IGNORE the specific values in the column (e.g. '000027').",
+            "**HARDCODED RULE**: IGNORE the row position (do not count 1, 2, 3...).",
+            "**ACTION**: For EVERY single line item row, output the value '1'.",
+            "**RESULT**: If there are 5 items, the output should be '1', '1', '1', '1', '1'.",
+            "**NEGATIVE RULE**: Do not increment the number."
         ]
     ),
 
@@ -445,10 +445,11 @@ INVOICE_ITEM_FIELDS: Dict[str, FieldConfig] = {
         extraction_guidelines=[
             "**COLUMN HEADERS**: 'Origin', 'Country of Origin', 'COO', 'Made In', 'Manufactured In'",
             "**FORMAT**: Full country name OR 2-letter ISO code (US, CN, JP, DE, SG)",
-            "**LOCATION**: In line items table or item details",
-            "**PRIORITY**: Prefer explicit column over 'Made in' mentions in description",
+            "**PRIORITY 1**: Explicit 'Origin' column in line items table",
+            "**PRIORITY 2**: 'Made in X' text within the item description",
+            "**FALLBACK**: Check document header/footer for global 'Country of Origin' or 'Origin' statements",
             "**DEFAULT**: Return null if not specified per item",
-            "**NEGATIVE RULE**: NOT the seller's country, NOT the buyer's country"
+            "**NEGATIVE RULE**: NOT the seller's country, NOT the buyer's country unless explicitly labeled 'Origin'"
         ]
     ),
 
@@ -460,11 +461,11 @@ INVOICE_ITEM_FIELDS: Dict[str, FieldConfig] = {
         extraction_guidelines=[
             "**COLUMN HEADERS**: 'Manufacturer', 'Mfg', 'Maker', 'Brand', 'Producer'",
             "**PRIORITY 1**: Dedicated manufacturer column in line items",
-            "**PRIORITY 2**: Manufacturer mentioned in item description",
-            "**PRIORITY 3**: If same for all items, may be in document header",
-            "**FORMAT**: Full company name",
+            "**PRIORITY 2**: Manufacturer mentioned in item description (e.g. 'c/o ManufacturerName')",
+            "**PRIORITY 3**: Specific 'Manufacturer' block in document body",
+            "**FALLBACK (Use Last)**: If NOT found in items or body, check Top-Left Header (Seller Name/Logo). Assume Seller is Manufacturer only if no other manufacturer is listed.",
             "**VENDOR SPECIFIC**: For Commin → Manufacturer is usually 'Murata Electronics'",
-            "**DEFAULT**: Return null if not explicitly stated"
+            "**FORMAT**: Full company name"
         ]
     ),
 
@@ -476,32 +477,25 @@ INVOICE_ITEM_FIELDS: Dict[str, FieldConfig] = {
         extraction_guidelines=[
             "**LOCATION**: Usually with manufacturer name, or in separate manufacturer details section",
             "**CRITICAL**: Extract the COMPLETE FULL address if available",
-            "**MUST INCLUDE ALL OF THESE (if present)**:",
-            "  - Street/Building address",
-            "  - City/Town",
-            "  - State/Province/Region",
-            "  - Postal/ZIP Code",
-            "  - Country",
+            "**PRIORITY 1**: Address in line items or dedicated 'Manufacturer Details' section",
+            "**FALLBACK (Use Last)**: If NOT found in body, extract Seller Address from Top-Left/Header as Manufacturer Address",
+            "**MUST INCLUDE ALL**: Street, City, State, Zip, AND COUNTRY.",
             "**CONCATENATION**: Join multi-line addresses with comma-space",
-            "**PRIORITY**: Extract if explicitly provided for line item",
-            "**DEFAULT**: Return null if manufacturer address not provided",
-            "**NEGATIVE RULE**: NOT the seller address, NOT the buyer address"
+            "**NEGATIVE RULE**: NOT the buyer address"
         ]
     ),
-
+    
     "item_mfg_country": FieldConfig(
         name="item_mfg_country",
         display_name="Manufacturer Country",
         field_type=FieldType.STRING,
-        description="Country where manufacturer is located",
+        description="Country of the manufacturer",
         extraction_guidelines=[
-            "**DERIVATION**: Can be extracted from manufacturer address",
-            "**FORMAT**: Full country name OR 2-letter ISO code",
-            "**PRIORITY**: If manufacturer address has country, extract it",
-            "**RELATION**: Often same as Country of Origin but not always",
-            "**DEFAULT**: Return null if not explicitly available"
+            "**DERIVATION**: Extract the country name from 'item_mfg_addr' or 'item_mfg_name'",
+            "**DEFAULT**: If Manufacturer is the Seller, use Seller's Country",
+            "**NEGATIVE RULE**: This may differ from 'item_origin_country' (Made In)."
         ]
-    ),
+    )
 }
 
 
@@ -694,7 +688,51 @@ TYPE1_PART = FieldConfig(
         "Ignore 'NW 104,000'"
     ]
 )
-TYPE1_FIELDS = create_custom_fields(po_override=TYPE1_PO, part_override=TYPE1_PART)
+# [NEW] Manufacturer Overrides for Type 1 to handle Power Tools Distribution
+TYPE1_MFG_NAME = FieldConfig(
+    name="item_mfg_name",
+    display_name="Manufacturer Name (Type 1)",
+    field_type=FieldType.STRING,
+    description="Manufacturer Name (Header Fallback)",
+    extraction_guidelines=[
+        "**LOOKUP STRATEGY**: Check the HEADER/SELLER block specifically.",
+        "**TARGET ENTITIES**: Look for 'POWER TOOLS DISTRIBUTION N.V.', 'Chicago Pneumatic', or 'Atlas Copco'.",
+        "**RULE**: If no explicit 'Manufacturer' column exists in line items, USE THE SELLER NAME from the header.",
+        "**DECOUPLING**: The Manufacturer (Legal Entity) may differ from 'Origin' (Country of Goods).",
+        "Example: If Origin is 'TW' (Taiwan) but Seller is 'Power Tools Distribution N.V.', extract 'Power Tools Distribution N.V.' as Manufacturer."
+    ]
+)
+TYPE1_MFG_ADDR = FieldConfig(
+    name="item_mfg_addr",
+    display_name="Manufacturer Address (Type 1)",
+    field_type=FieldType.STRING,
+    description="Manufacturer Address (Header Fallback)",
+    extraction_guidelines=[
+        "**LOOKUP STRATEGY**: Extract the FULL address of the Manufacturer identified above.",
+        "**LOCATION**: Usually in the document header/letterhead.",
+        "**EXAMPLE**: 'INDUSTRIELAAN 40, 3730 BILZEN-HOESELT, BELGIUM'.",
+        "**RULE**: If using Seller as Manufacturer, use Seller Address here."
+    ]
+)
+TYPE1_MFG_COUNTRY = FieldConfig(
+    name="item_mfg_country",
+    display_name="Manufacturer Country (Type 1)",
+    field_type=FieldType.STRING,
+    description="Manufacturer Country",
+    extraction_guidelines=[
+        "**DERIVATION**: Extract country from 'item_mfg_addr'.",
+        "**EXAMPLE**: 'BELGIUM' (if address is in Bilzen-Hoeselt).",
+        "**CRITICAL**: This can be different from 'item_origin_country' (e.g. Origin=TW, MfgCountry=BELGIUM)."
+    ]
+)
+
+TYPE1_FIELDS = create_custom_fields(
+    po_override=TYPE1_PO, 
+    part_override=TYPE1_PART,
+    mfg_name_override=TYPE1_MFG_NAME,
+    mfg_addr_override=TYPE1_MFG_ADDR,
+    mfg_country_override=TYPE1_MFG_COUNTRY
+)
 
 
 # --- 3. TYPE 2 (KM_558...) ---
@@ -770,24 +808,10 @@ CROWN_MFG_ADDR = FieldConfig(
     ]
 )
 
-CROWN_MFG_COUNTRY = FieldConfig(
-    name="item_mfg_country",
-    display_name="Manufacturer Country (Crown)",
-    field_type=FieldType.STRING,
-    description="Manufacturer Country - Always Germany",
-    extraction_guidelines=[
-        "**CRITICAL**: For Crown invoices, manufacturer country is ALWAYS 'Germany'",
-        "**LOGIC**: Crown Gabelstapler GmbH & Co. KG is based in Germany",
-        "**DO NOT CONFUSE**: item_origin_country (where item was made) ≠ item_mfg_country (where manufacturer is located)",
-        "**EXAMPLE**: Item made in USA, but manufacturer (Crown) is in Germany"
-    ]
-)
-
 CROWN_FIELDS = create_custom_fields(
     po_override=CROWN_PO,
     mfg_name_override=CROWN_MFG_NAME,
-    mfg_addr_override=CROWN_MFG_ADDR,
-    mfg_country_override=CROWN_MFG_COUNTRY
+    mfg_addr_override=CROWN_MFG_ADDR
 )
 
 # Remove TOI from Crown Prompt entirely to prevent hallucination
@@ -1042,7 +1066,9 @@ TYPE1_PROMPT = generate_extraction_prompt(
     [
         "**STRICT**: item_po_no = 'ORDER NO'",
         "**STRICT**: item_part_no = 'Article number'",
-        "**IGNORE**: 'Pack:' or 'NW' in Article column"
+        "**IGNORE**: 'Pack:' or 'NW' in Article column",
+        "**MANUFACTURER OVERRIDE**: If no specific manufacturer column exists, use the SELLER (e.g., Power Tools Distribution) as the Manufacturer.",
+        "**MANUFACTURER ADDRESS**: Extract the full address from the header (e.g., INDUSTRIELAAN 40...)."
     ]
 )
 
@@ -1083,7 +1109,6 @@ CROWN_PROMPT = generate_extraction_prompt(
         "**MANUFACTURER RULE** (CRITICAL):",
         "  - item_mfg_name = ALWAYS 'Crown Gabelstapler GmbH & Co. KG'",
         "  - item_mfg_addr = ALWAYS the seller's full address from invoice header",
-        "  - item_mfg_country = ALWAYS 'Germany'",
         "  - DO NOT confuse item_origin_country (Made in USA/Germany/China) with item_mfg_country"
     ]
 )
